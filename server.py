@@ -349,6 +349,32 @@ def parse_switch(text: str) -> str | None:
 
 # ---------------------------------------------------------------- session
 
+# Things Whisper "hears" in near-silence: ignore them rather than answering.
+HALLUCINATIONS = {
+    "thank you", "thanks for watching", "thank you for watching", "i'm so glad that you're here",
+    "you", "bye", "okay", "so", "um", "uh", "hmm", "the end", "please subscribe",
+    "subtitles by the amara.org community", "i'm going to go ahead and do that",
+}
+
+
+def real_speech(text: str, audio: np.ndarray) -> bool:
+    words = re.findall(r"[a-zA-Z']+", text.lower())
+    if not words:
+        return False  # only dots or punctuation
+    phrase = " ".join(words)
+    if phrase in HALLUCINATIONS:
+        return False
+    # The same short phrase repeated ("I'm so glad... I'm so glad...")
+    sentences = [x.strip() for x in re.split(r"[.!?]+", text.lower()) if x.strip()]
+    if len(sentences) >= 2 and len(set(sentences)) == 1:
+        return False
+    # Too quiet overall to be someone talking to Jarvis
+    rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2))) if audio.size else 0.0
+    if rms < 80:
+        return False
+    return True
+
+
 class Session:
     """One browser connection: a small state machine driven by mic frames."""
 
@@ -478,7 +504,8 @@ class Session:
         t0 = time.monotonic()
         text = await self.loop.run_in_executor(None, engines.transcribe, audio)
         log.info("Heard (%.2fs): %r", time.monotonic() - t0, text)
-        if len(text) < 2:
+        if not real_speech(text, audio):
+            log.info("Ignored (noise or a Whisper hallucination)")
             await self.set_state("idle")
             return
         await self.respond(text)
