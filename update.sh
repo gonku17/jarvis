@@ -25,9 +25,18 @@ OLD_REQ="$(cat requirements.txt 2>/dev/null)"
 rsync -a --exclude memory.json --exclude settings.json --exclude '*.log' --exclude .venv \
   --exclude models --exclude repo.txt --exclude .version --exclude Jarvis.app "$SRC"/ ./
 # Refresh the installed app bundle too (its stub only calls update.sh + launch.sh).
+# First run: install it into ~/Applications and add it to the Dock.
+if [ ! -d "$HOME/Applications/Jarvis.app" ] && [ ! -d "/Applications/Jarvis.app" ]; then
+  mkdir -p "$HOME/Applications/Jarvis.app"
+  NEW_APP=1
+fi
 for APP in "$HOME/Applications/Jarvis.app" "/Applications/Jarvis.app"; do
-  [ -d "$APP" ] && rsync -a "$SRC/Jarvis.app/" "$APP/" && xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+  [ -d "$APP" ] && rsync -a "$SRC/Jarvis.app/" "$APP/" && chmod +x "$APP/Contents/MacOS/Jarvis" \
+    && xattr -dr com.apple.quarantine "$APP" 2>/dev/null
 done
+if [ "${NEW_APP:-0}" = 1 ]; then
+  defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$HOME/Applications/Jarvis.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" && killall Dock
+fi
 chmod +x setup.sh start.sh update.sh launch.sh 2>/dev/null
 if [ "$OLD_REQ" != "$(cat requirements.txt)" ] && [ -x .venv/bin/python ]; then
   echo "installing new Python packages"
