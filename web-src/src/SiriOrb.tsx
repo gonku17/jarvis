@@ -18,6 +18,7 @@ uniform float t;
 uniform float level;
 uniform float energy;
 uniform float spin;
+uniform float soft;   // 0 = crisp ribbons, 1 = soft blended light
 uniform vec3 c1; uniform vec3 c2; uniform vec3 c3; uniform vec3 c4;
 
 mat3 rotY(float a) { float c = cos(a), s = sin(a); return mat3(c,0.,-s, 0.,1.,0., s,0.,c); }
@@ -33,7 +34,7 @@ float ribbon(vec3 p, mat3 m, float f, float sp, float amp, float w, float seed) 
   float band = exp(-d * d / (w * w));
   // fade the sheet into a ribbon (narrow across z), twisting over time
   float across = q.z * cos(q.x * 1.5 + t * 0.4 + seed) + q.y * 0.3;
-  return band * exp(-across * across / 0.16);
+  return band * exp(-across * across / (0.16 + soft * 0.55));
 }
 
 void main() {
@@ -65,7 +66,7 @@ void main() {
 
   mat3 world = rotY(spin * 0.6) * rotX(sin(t * 0.13) * 0.5 + 0.3);
   float amp = 0.10 + energy * 0.12 + level * 0.22;
-  float w = 0.055 + level * 0.035;
+  float w = (0.055 + level * 0.035) * (1.0 + soft * 1.5);
   float sp = 0.5 + energy * 1.4;
 
   mat3 m1 = rotZ(0.3);
@@ -88,16 +89,29 @@ void main() {
     float d4 = ribbon(p, m4, 2.4, sp * 1.1, amp, w, 4.9);
     vec3 e = c1 * d1 + c2 * d2 + c3 * d3 + c4 * d4;
     float dens = d1 + d2 + d3 + d4;
+    // drifting clouds of coloured light that melt into each other (soft style)
+    if (soft > 0.0) {
+      float bs = 0.06 + level * 0.08 + energy * 0.02;
+      vec3 b1 = vec3(sin(t * 0.41) * 0.45, cos(t * 0.33) * 0.35, sin(t * 0.27 + 1.0) * 0.4);
+      vec3 b2 = vec3(cos(t * 0.37 + 2.0) * 0.45, sin(t * 0.29 + 0.5) * 0.4, cos(t * 0.31) * 0.4);
+      vec3 b3 = vec3(sin(t * 0.23 + 4.0) * 0.4, cos(t * 0.43 + 3.0) * 0.4, sin(t * 0.35 + 2.0) * 0.45);
+      float g1 = exp(-dot(p - b1, p - b1) / bs), g2 = exp(-dot(p - b2, p - b2) / bs), g3 = exp(-dot(p - b3, p - b3) / bs);
+      e = e * (1.0 - soft * 0.5) + soft * (c1 * g1 + c3 * g2 + c2 * g3) * 0.6;
+      dens = dens * (1.0 - soft * 0.6) + soft * (g1 + g2 + g3) * 0.3;
+    }
     // parts further back are dimmer and cooler: depth you can see
     float depth = float(i) / float(N);
     e *= mix(1.25, 0.45, depth);
-    acc += trans * e * dt * (6.0 - energy * 2.0);
+    acc += trans * e * dt * (6.0 - energy * 2.0) * (1.0 + level * 0.7);
     trans *= exp(-dens * dt * 2.2);
   }
   // white-hot where ribbons overlap
   float lum = dot(acc, vec3(0.333));
-  acc += vec3(1.0) * smoothstep(1.2, 2.6, lum) * 0.35;
+  acc += vec3(1.0) * smoothstep(1.2, 2.6, lum) * 0.35 * (1.0 - soft * 0.7);
   acc = acc / (1.0 + acc * 0.75);
+  // richer, more luminous colour in the soft style (less milky grey where colours overlap)
+  float l2 = dot(acc, vec3(0.299, 0.587, 0.114));
+  acc = max(mix(vec3(l2), acc, 1.0 + soft * 0.8), 0.0) * (1.0 + soft * 0.1);
 
   // glass shell: fresnel rim, a soft key light, and a sharp specular highlight
   float fres = pow(1.0 - max(dot(nrm, -rd), 0.0), 3.0);
@@ -106,7 +120,7 @@ void main() {
   float spec2 = pow(max(dot(reflect(rd, nrm), normalize(vec3(0.6, -0.5, 0.5))), 0.0), 18.0);
   vec3 rimCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) + spin)) * fres * 0.9;
   vec3 body = vec3(0.015, 0.02, 0.045) * (0.6 + 0.4 * nrm.y);
-  vec3 col = body + acc + rimCol + vec3(spec) * 0.8 + c3 * spec2 * 0.12;
+  vec3 col = body + acc + rimCol + vec3(spec) * (0.8 - soft * 0.35) + c3 * spec2 * 0.12;
 
   float aa = smoothstep(0.0, 0.004, h * h);
   gl_FragColor = vec4(mix(glowCol * glow, col, aa), max(aa, glow * 0.4));
@@ -123,7 +137,8 @@ const PALETTES: Record<string, string[]> = {
   claude: ["#FF6A3D", "#FF3D7F", "#FFB547", "#B45CFF"],  // warmer for Claude
 }
 
-export function SiriOrb({ phase, brain, inVol, outVol }: {
+export function SiriOrb({ phase, brain, inVol, outVol, style = "glow" }: {
+  style?: "glow" | "ribbons"
   phase: Phase
   brain: string
   inVol: React.MutableRefObject<number>
@@ -132,6 +147,8 @@ export function SiriOrb({ phase, brain, inVol, outVol }: {
   const canvas = useRef<HTMLCanvasElement>(null)
   const phaseRef = useRef(phase)
   const brainRef = useRef(brain)
+  const styleRef = useRef(style)
+  styleRef.current = style
   phaseRef.current = phase
   brainRef.current = brain
 
@@ -160,10 +177,10 @@ export function SiriOrb({ phase, brain, inVol, outVol }: {
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
     const u = (n: string) => gl.getUniformLocation(prog, n)
-    const U = { t: u("t"), level: u("level"), energy: u("energy"), spin: u("spin"),
+    const U = { t: u("t"), level: u("level"), energy: u("energy"), spin: u("spin"), soft: u("soft"),
       c: [u("c1"), u("c2"), u("c3"), u("c4")] }
 
-    let raf = 0, last = performance.now(), spin = 0, lvl = 0, energy = 0.2
+    let raf = 0, last = performance.now(), spin = 0, lvl = 0, energy = 0.2, soft = styleRef.current === "glow" ? 1 : 0
     const cols = PALETTES.gemma.map(hex)
     const start = last
     const frame = (now: number) => {
@@ -192,6 +209,8 @@ export function SiriOrb({ phase, brain, inVol, outVol }: {
       gl.uniform1f(U.level, lvl)
       gl.uniform1f(U.energy, energy)
       gl.uniform1f(U.spin, spin)
+      soft += ((styleRef.current === "glow" ? 1 : 0) - soft) * Math.min(1, dt * 3)
+      gl.uniform1f(U.soft, soft)
       U.c.forEach((l, i) => gl.uniform3fv(l, cols[i]))
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
       raf = requestAnimationFrame(frame)

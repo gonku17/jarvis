@@ -30,6 +30,13 @@ export default function App() {
   const [allow, setAllow] = useState({ calendar: false, mail: false })
   const [alwaysOn, setAlwaysOn] = useState(false)
   const [personality, setPersonality] = useState("butler")
+  const [orbStyle, setOrbStyle] = useState<"glow" | "ribbons">(() => {
+    try { return localStorage.getItem("orbStyle") === "ribbons" ? "ribbons" : "glow" } catch { return "glow" }
+  })
+  const pickOrb = (v: "glow" | "ribbons") => {
+    setOrbStyle(v)
+    try { localStorage.setItem("orbStyle", v) } catch { /* private mode */ }
+  }
   const [personalities, setPersonalities] = useState<Record<string, string>>({})
 
   const wsRef = useRef<WebSocket | null>(null)
@@ -317,6 +324,11 @@ export default function App() {
               Let Jarvis read your {what === "calendar" ? "Calendar" : "Mail"} app
             </label>
           ))}
+          <div className="settings-title">Orb style</div>
+          <div className="voices">
+            <button className={"chip" + (orbStyle === "glow" ? " on" : "")} onClick={() => pickOrb("glow")}>Soft glow</button>
+            <button className={"chip" + (orbStyle === "ribbons" ? " on" : "")} onClick={() => pickOrb("ribbons")}>3D ribbons</button>
+          </div>
           <div className="settings-title">Personality</div>
           <div className="voices">
             {Object.entries(personalities).map(([id, label]) => (
@@ -339,7 +351,7 @@ export default function App() {
       )}
 
       <div className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
-        <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} />
+        <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} style={orbStyle} />
       </div>
       <div className="status">{STATUS[phase]}</div>
 
