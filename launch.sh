@@ -32,7 +32,7 @@ for app in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium"; do
   if open -Ra "$app" 2>/dev/null; then
     mkdir -p "$PROFILE"
     open -n -a "$app" --args --app="$URL" --user-data-dir="$PROFILE" \
-      --autoplay-policy=no-user-gesture-required --window-size=480,760 \
+      --autoplay-policy=no-user-gesture-required --window-size=980,860 \
       --no-first-run --no-default-browser-check
     exit 0
   fi

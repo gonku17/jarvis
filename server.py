@@ -657,6 +657,10 @@ class Session:
                                    "friendly": "Hey! This is me being friendly. How's it going?",
                                    "brief": "Understood. Short answers.",
                                    "sarcastic": "Oh wonderful, a personality change. I'm thrilled."}[msg["personality"]])
+        elif kind == "hud_action":
+            say = await skills.hud_action(str(msg.get("action")))
+            if say and self.state in ("idle", "listening"):
+                await self.speak_only(say)
         elif kind == "clear_history":
             skills.memory.data["history"] = []
             skills.memory.save()
@@ -832,6 +836,11 @@ async def api_status() -> dict:
     st = LOCAL.status if LOCAL else {}
     return {"always_on": LOCAL is not None, "state": st.get("state", "idle"),
             "brain": st.get("brain", load_settings().get("brain", "gemma"))}
+
+
+@app.get("/api/hud")
+async def api_hud() -> dict:
+    return await skills.hud()
 
 
 @app.post("/api/cmd")

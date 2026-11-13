@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { SiriOrb } from "./SiriOrb"
+import { Hud } from "./Hud"
 
 type Phase = "loading" | "idle" | "listening" | "thinking" | "talking"
 type Msg = { role: "user" | "assistant" | "err"; text: string; old?: boolean }
@@ -43,6 +44,10 @@ export default function App() {
   const ctxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const inputVol = useRef(0)
+  const orbRef = useRef<HTMLDivElement>(null)
+  const [lastUserText, setLastUserText] = useState("")
+  const [hudReset, setHudReset] = useState(0)
+  const [hudOn, setHudOn] = useState(() => { try { return localStorage.getItem("hudOn") !== "0" } catch { return true } })
   const outputVol = useRef(0)
   const queue = useRef<ArrayBuffer[]>([])
   const playing = useRef(false)
@@ -138,6 +143,7 @@ export default function App() {
           break
         case "user":
           setLog((l) => [...l, { role: "user", text: m.text }])
+          setLastUserText(m.text)
           break
         case "history":
           setLog((m.turns || []).map((x: { role: string; content: string }) => ({
@@ -329,6 +335,15 @@ export default function App() {
             <button className={"chip" + (orbStyle === "glow" ? " on" : "")} onClick={() => pickOrb("glow")}>Soft glow</button>
             <button className={"chip" + (orbStyle === "ribbons" ? " on" : "")} onClick={() => pickOrb("ribbons")}>3D ribbons</button>
           </div>
+          <div className="settings-title">Info panels</div>
+          <label className="toggle">
+            <input type="checkbox" checked={hudOn} onChange={(e) => {
+              setHudOn(e.target.checked)
+              try { localStorage.setItem("hudOn", e.target.checked ? "1" : "0") } catch { /* ignore */ }
+            }} />
+            Show floating info around the orb (drag to move, × to hide)
+          </label>
+          <button className="chip" onClick={() => setHudReset((n) => n + 1)}>Reset panel layout</button>
           <div className="settings-title">Personality</div>
           <div className="voices">
             {Object.entries(personalities).map(([id, label]) => (
@@ -350,8 +365,12 @@ export default function App() {
         </div>
       )}
 
-      <div className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
+      <div className={"stage" + (hudOn ? " with-hud" : "")}>
+      {hudOn && <Hud orbRef={orbRef} phase={phase} lastUserText={lastUserText} send={send} resetKey={hudReset}
+        ask={(text) => send({ type: "text", text })} />}
+      <div ref={orbRef} className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
         <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} style={orbStyle} />
+      </div>
       </div>
       <div className="status">{STATUS[phase]}</div>
 

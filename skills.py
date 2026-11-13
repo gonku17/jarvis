@@ -287,6 +287,54 @@ async def weather(place: str | None, tomorrow: bool) -> str:
             f"Today's high is {hi}, low {lo}.{rain_txt}")
 
 
+async def weather_brief(place: str | None) -> dict | None:
+    async with httpx.AsyncClient(timeout=8) as c:
+        loc = await geocode(c, place)
+        if not loc:
+            return None
+        lat, lon, name = loc
+        r = await c.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
+            "current": "temperature_2m,weather_code",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max"})
+        w = r.json()
+    d, cur = w["daily"], w["current"]
+    return {"place": name, "temp": round(cur["temperature_2m"]), "code": cur["weather_code"],
+            "desc": WEATHER_CODES.get(cur["weather_code"], "mixed"),
+            "hi": round(d["temperature_2m_max"][0]), "lo": round(d["temperature_2m_min"][0]),
+            "rain": d["precipitation_probability_max"][0]}
+
+
+def now_playing() -> dict | None:
+    """What Music or Spotify is playing, without launching either app."""
+    for app in ("Spotify", "Music"):
+        try:
+            if osascript(f'application "{app}" is running', timeout=3) != "true":
+                continue
+            out = osascript(f'tell application "{app}"\n'
+                            '  if player state is stopped then return ""\n'
+                            '  return (player state as string) & "|" & (name of current track) & "|" & (artist of current track)\n'
+                            'end tell', timeout=4)
+        except Exception:
+            continue
+        if out:
+            state, _, rest = out.partition("|")
+            title, _, artist = rest.partition("|")
+            return {"app": app, "playing": state.strip() == "playing", "title": title, "artist": artist}
+    return None
+
+
+def battery() -> dict | None:
+    try:
+        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return None
+    m = re.search(r"(\d+)%;\s*([a-z ]+);", out)
+    if not m:
+        return None
+    return {"percent": int(m.group(1)), "charging": m.group(2).strip() in ("charging", "charged", "finishing charge")}
+
+
 async def headlines(n: int = 5) -> str:
     async with httpx.AsyncClient(timeout=8, headers=UA) as c:
         r = await c.get("https://feeds.bbci.co.uk/news/rss.xml")
@@ -432,6 +480,82 @@ class Skills:
         self.announce = announce  # speak something unprompted (timers)
         self.timers: list[asyncio.Task] = []
 
+    # -- live info for the floating panels around the orb
+    async def hud(self) -> dict:
+        now = time.time()
+        cache = self.__dict__.setdefault("_hud_cache", {})
+
+        async def cached(key, ttl, fn):
+            hit = cache.get(key)
+            if hit and now - hit[0] < ttl:
+                return hit[1]
+            try:
+                val = await fn()
+            except Exception as e:
+                log.debug("hud %s failed: %s", key, e)
+                val = hit[1] if hit else None
+            cache[key] = (now, val)
+            return val
+
+        loop = asyncio.get_running_loop()
+        run = lambda f, *a: loop.run_in_executor(None, f, *a)  # noqa: E731
+
+        async def get_weather():
+            return await weather_brief(self.memory.fact_value(r"lives in (.+)"))
+
+        async def get_event():
+            if not self.allowed("calendar"):
+                return {"locked": True}
+            evs = await asyncio.wait_for(run(calendar_events, 0, 2), 10)
+            n = dt.datetime.now()
+            up = [e for e in evs if not e[1] and e[0] >= n - dt.timedelta(minutes=10)]
+            if not up:
+                return {"title": None}
+            start, _, title = up[0]
+            day = "Today" if start.date() == n.date() else "Tomorrow"
+            return {"title": title, "when": f"{day} {start.strftime('%-I:%M %p')}", "count": len(up)}
+
+        async def get_mail():
+            if not self.allowed("mail"):
+                return {"locked": True}
+            unread, msgs = await asyncio.wait_for(run(latest_mail, 3, False), 10)
+            return {"unread": unread, "latest": [{"from": m["from"], "subject": m["subject"]} for m in msgs[:3]]}
+
+        async def get_news():
+            async with httpx.AsyncClient(timeout=8, headers=UA) as c:
+                r = await c.get("https://feeds.bbci.co.uk/news/rss.xml")
+            titles = re.findall(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", r.text, re.S)
+            return [html.unescape(x).strip() for x in titles[:3]]
+
+        weather_v, event_v, mail_v, news_v, music_v, batt_v = await asyncio.gather(
+            cached("weather", 600, get_weather), cached("event", 120, get_event),
+            cached("mail", 120, get_mail), cached("news", 900, get_news),
+            cached("music", 4, lambda: run(now_playing)), cached("battery", 60, lambda: run(battery)))
+        timers = [{"label": t.jarvis_label, "ends": t.jarvis_end} for t in self.timers
+                  if not t.done() and hasattr(t, "jarvis_end")]
+        return {"weather": weather_v, "event": event_v, "mail": mail_v, "news": news_v,
+                "music": music_v, "battery": batt_v, "timers": timers, "now": now}
+
+    async def hud_action(self, action: str) -> str | None:
+        """Clicks on the floating panels. Returns text to say, if any."""
+        loop = asyncio.get_running_loop()
+        if action in ("music_toggle", "music_next", "music_prev"):
+            info = await loop.run_in_executor(None, now_playing)
+            app = (info or {}).get("app") or "Music"
+            cmd = {"music_toggle": "playpause", "music_next": "next track", "music_prev": "previous track"}[action]
+            await loop.run_in_executor(None, osascript, f"tell application {as_str(app)} to {cmd}")
+            self.__dict__.get("_hud_cache", {}).pop("music", None)
+        elif action == "cancel_timers":
+            n = sum(1 for task in self.timers if not task.done() and task.cancel())
+            return "Timer cancelled." if n else None
+        elif action == "open_calendar":
+            subprocess.Popen(["open", "-a", "Calendar"])
+        elif action == "open_mail":
+            subprocess.Popen(["open", "-a", "Mail"])
+        elif action == "open_weather":
+            subprocess.Popen(["open", "-a", "Weather"])
+        return None
+
     def system_notes(self) -> str:
         now = dt.datetime.now()
         notes = [f"Current local date and time: {now.strftime('%A %-d %B %Y, %-I:%M %p')}."]
@@ -505,7 +629,10 @@ class Skills:
             except Exception:
                 log.exception("timer announce failed")
 
-        self.timers = [x for x in self.timers if not x.done()] + [asyncio.create_task(ring())]
+        task = asyncio.create_task(ring())
+        task.jarvis_end = time.time() + secs  # type: ignore[attr-defined]
+        task.jarvis_label = label  # type: ignore[attr-defined]
+        self.timers = [x for x in self.timers if not x.done()] + [task]
         return Result(reply=f"Timer set for {label}.")
 
     # -- reminders (Reminders app)
