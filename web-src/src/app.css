@@ -32,7 +32,7 @@ body {
 .start { position: fixed; inset: 0; margin: auto; width: fit-content; height: fit-content; padding: 16px 28px; font-size: 17px; }
 .hint { color: var(--muted); font-size: 13px; text-align: center; }
 .orb-wrap > div { position: relative; width: 100%; height: 100%; }
-.orb-wrap { filter: drop-shadow(0 0 40px rgba(80, 160, 255, 0.35)); }
+
 .brains { display: flex; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
 .seg { display: inline-flex; background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
 .seg button { background: transparent; border: 0; color: var(--muted); font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 999px; cursor: pointer; }

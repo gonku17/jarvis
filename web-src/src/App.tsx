@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Orb, type AgentState } from "./Orb"
+import { SiriOrb } from "./SiriOrb"
 
 type Phase = "loading" | "idle" | "listening" | "thinking" | "talking"
 type Msg = { role: "user" | "assistant" | "err"; text: string }
@@ -232,10 +232,6 @@ export default function App() {
     if (keyDraft.trim()) send({ type: "set_key", key: keyDraft.trim() })
   }
 
-  const orbColors: [string, string] = brain === "claude" ? ["#C2410C", "#FDBA74"] : ["#1F6FEB", "#7FE3FF"]
-
-  const agentState: AgentState = phase === "idle" ? null : phase === "loading" ? "thinking" : phase
-  const reactive = phase === "listening" || phase === "talking"
 
   return (
     <div className="app">
@@ -326,13 +322,7 @@ export default function App() {
       )}
 
       <div className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
-        <Orb
-          colors={orbColors}
-          agentState={agentState}
-          volumeMode={reactive ? "manual" : "auto"}
-          inputVolumeRef={inputVol}
-          outputVolumeRef={outputVol}
-        />
+        <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} />
       </div>
       <div className="status">{STATUS[phase]}</div>
 
