@@ -1,0 +1,10 @@
+.venv/
+models/
+memory.json
+memory.tmp
+settings.json
+*.log
+.version
+repo.txt
+__pycache__/
+web-src/node_modules/
