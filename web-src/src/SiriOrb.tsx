@@ -14,65 +14,102 @@ void main() { uv = p; gl_Position = vec4(p, 0.0, 1.0); }
 const FRAG = `
 precision highp float;
 varying vec2 uv;
-uniform float t;       // time, seconds
-uniform float level;   // 0..1 voice / mic loudness (smoothed)
-uniform float energy;  // 0..1 how lively: idle low, talking high
-uniform float spin;    // accumulated rotation
+uniform float t;
+uniform float level;
+uniform float energy;
+uniform float spin;
 uniform vec3 c1; uniform vec3 c2; uniform vec3 c3; uniform vec3 c4;
 
-// One flowing ribbon: a wavy band through the sphere, rotated by angle a.
-float ribbon(vec2 q, float a, float freq, float speed, float amp, float width, float seed) {
-  float ca = cos(a), sa = sin(a);
-  vec2 r = vec2(ca * q.x - sa * q.y, sa * q.x + ca * q.y);
-  float wave = sin(r.x * freq + t * speed + seed) * amp
-             + sin(r.x * freq * 1.9 - t * speed * 0.7 + seed * 2.3) * amp * 0.45;
-  float d = abs(r.y - wave);
-  float w = width * (0.6 + 0.4 * (1.0 - r.x * r.x));     // thinner toward the edges
-  return exp(-d * d / (w * w));
+mat3 rotY(float a) { float c = cos(a), s = sin(a); return mat3(c,0.,-s, 0.,1.,0., s,0.,c); }
+mat3 rotX(float a) { float c = cos(a), s = sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }
+mat3 rotZ(float a) { float c = cos(a), s = sin(a); return mat3(c,s,0., -s,c,0., 0.,0.,1.); }
+
+// A ribbon is a thin, wavy sheet of light curling through the ball.
+float ribbon(vec3 p, mat3 m, float f, float sp, float amp, float w, float seed) {
+  vec3 q = m * p;
+  float wave = sin(q.x * f + t * sp + seed) * amp + sin(q.z * f * 1.3 - t * sp * 0.8 + seed * 1.7) * amp * 0.6
+             + sin((q.x + q.z) * f * 0.7 + t * sp * 0.5 + seed * 3.1) * amp * 0.4;
+  float d = q.y - wave;
+  float band = exp(-d * d / (w * w));
+  // fade the sheet into a ribbon (narrow across z), twisting over time
+  float across = q.z * cos(q.x * 1.5 + t * 0.4 + seed) + q.y * 0.3;
+  return band * exp(-across * across / 0.16);
 }
 
 void main() {
-  vec2 q = uv * 1.08;
-  float r = length(q);
-  float R = 0.82 + level * 0.06;                          // sphere breathes with the voice
-  if (r > 1.05) { gl_FragColor = vec4(0.0); return; }
+  vec2 q = uv * 1.1;
+  float R = 0.8 + level * 0.05;
+  vec3 ro = vec3(0.0, 0.0, 2.6);
+  vec3 rd = normalize(vec3(q, -2.6));
+  // ray-sphere intersection
+  float b = dot(ro, rd);
+  float c = dot(ro, ro) - R * R;
+  float h = b * b - c;
+  float r2 = length(q);
 
-  float inside = smoothstep(R + 0.006, R - 0.012, r);
-  // Bend coordinates like a lens so ribbons look like they're inside a ball.
-  vec2 s = q / R;
-  float z = sqrt(max(0.0, 1.0 - dot(s, s)));
-  vec2 lens = s * (0.75 + 0.25 * z);
+  vec3 bg = vec3(0.0);
+  float alpha = 0.0;
+  // soft outer glow even when the ray misses
+  float edge = length(q) / (R * 1.0);
+  float glow = exp(-max(edge - 1.0, 0.0) * (14.0 - level * 6.0));
+  vec3 glowCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) - spin)) * (0.25 + 0.35 * energy + 0.6 * level);
 
-  float amp = 0.12 + energy * 0.18 + level * 0.35;
-  float wid = 0.14 + energy * 0.06 + level * 0.12;
-  float sp = 0.6 + energy * 1.6;
+  if (h < 0.0) {
+    gl_FragColor = vec4(glowCol * glow, glow * (0.25 + 0.3 * energy + 0.5 * level));
+    return;
+  }
+  h = sqrt(h);
+  float tn = -b - h, tf = -b + h;
+  vec3 pn = ro + rd * tn;
+  vec3 nrm = normalize(pn);
 
-  vec3 col = vec3(0.0);
-  col += c1 * ribbon(lens, spin + 0.0, 3.1, sp * 1.00, amp, wid, 0.0);
-  col += c2 * ribbon(lens, spin * -1.3 + 1.1, 2.6, sp * 1.25, amp * 1.1, wid * 0.9, 1.7);
-  col += c3 * ribbon(lens, spin * 0.8 + 2.2, 3.7, sp * 0.85, amp * 0.9, wid * 1.1, 3.1);
-  col += c4 * ribbon(lens, spin * -0.6 + 3.0, 2.2, sp * 1.10, amp * 1.2, wid * 0.8, 4.6);
-  // soft colour haze filling the ball
-  col += (c1 + c2 + c3) * 0.05 * (0.6 + energy) * z;
-  // bright white core where ribbons overlap
-  float lum = dot(col, vec3(0.33));
-  col += vec3(1.0) * smoothstep(0.9, 2.2, lum) * 0.6;
-  col = col / (1.0 + col * 0.55);                         // tone map so overlaps glow, not clip
+  mat3 world = rotY(spin * 0.6) * rotX(sin(t * 0.13) * 0.5 + 0.3);
+  float amp = 0.10 + energy * 0.12 + level * 0.22;
+  float w = 0.055 + level * 0.035;
+  float sp = 0.5 + energy * 1.4;
 
-  // Glass: dark body, a rim light and a highlight at the top left.
-  vec3 glass = vec3(0.02, 0.025, 0.05) * (1.0 - z * 0.5);
-  float rim = pow(1.0 - z, 3.0) * 0.55;
-  vec3 rimCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) + spin)) * rim;
-  float hl = exp(-pow(length(s - vec2(-0.35, 0.45)) / 0.28, 2.0)) * 0.18;
+  mat3 m1 = rotZ(0.3);
+  mat3 m2 = rotZ(1.9) * rotY(1.2);
+  mat3 m3 = rotX(1.2) * rotZ(-0.8);
+  mat3 m4 = rotY(2.4) * rotX(-0.9);
 
-  vec3 ball = glass + col * z + rimCol + vec3(hl);
-  // Outer glow around the sphere.
-  float glow = exp(-max(r - R, 0.0) / (0.05 + level * 0.06)) * (1.0 - inside);
-  vec3 glowCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) - spin)) * glow;
+  // march through the ball front to back, accumulating glowing ribbons
+  vec3 acc = vec3(0.0);
+  float trans = 1.0;
+  const int N = 36;
+  float dt = (tf - tn) / float(N);
+  for (int i = 0; i < N; i++) {
+    float tt = tn + (float(i) + 0.5) * dt;
+    vec3 p = (ro + rd * tt) * (1.0 / R);
+    p = world * p;
+    float d1 = ribbon(p, m1, 2.6, sp, amp, w, 0.0);
+    float d2 = ribbon(p, m2, 2.2, sp * 1.2, amp, w, 1.7);
+    float d3 = ribbon(p, m3, 3.0, sp * 0.9, amp, w, 3.3);
+    float d4 = ribbon(p, m4, 2.4, sp * 1.1, amp, w, 4.9);
+    vec3 e = c1 * d1 + c2 * d2 + c3 * d3 + c4 * d4;
+    float dens = d1 + d2 + d3 + d4;
+    // parts further back are dimmer and cooler: depth you can see
+    float depth = float(i) / float(N);
+    e *= mix(1.25, 0.45, depth);
+    acc += trans * e * dt * (6.0 - energy * 2.0);
+    trans *= exp(-dens * dt * 2.2);
+  }
+  // white-hot where ribbons overlap
+  float lum = dot(acc, vec3(0.333));
+  acc += vec3(1.0) * smoothstep(1.2, 2.6, lum) * 0.35;
+  acc = acc / (1.0 + acc * 0.75);
 
-  vec3 outc = ball * inside + glowCol;
-  float alpha = max(inside, clamp(glow * (0.15 + 0.25 * energy + 0.5 * level), 0.0, 1.0));
-  gl_FragColor = vec4(outc, alpha);
+  // glass shell: fresnel rim, a soft key light, and a sharp specular highlight
+  float fres = pow(1.0 - max(dot(nrm, -rd), 0.0), 3.0);
+  vec3 L = normalize(vec3(-0.5, 0.7, 0.6));
+  float spec = pow(max(dot(reflect(rd, nrm), L), 0.0), 60.0);
+  float spec2 = pow(max(dot(reflect(rd, nrm), normalize(vec3(0.6, -0.5, 0.5))), 0.0), 18.0);
+  vec3 rimCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) + spin)) * fres * 0.9;
+  vec3 body = vec3(0.015, 0.02, 0.045) * (0.6 + 0.4 * nrm.y);
+  vec3 col = body + acc + rimCol + vec3(spec) * 0.8 + c3 * spec2 * 0.12;
+
+  float aa = smoothstep(0.0, 0.004, h * h);
+  gl_FragColor = vec4(mix(glowCol * glow, col, aa), max(aa, glow * 0.4));
 }
 `
 
@@ -132,7 +169,7 @@ export function SiriOrb({ phase, brain, inVol, outVol }: {
     const frame = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5)
       const w = Math.round(cv.clientWidth * dpr), h = Math.round(cv.clientHeight * dpr)
       if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h }
       gl.viewport(0, 0, w, h)

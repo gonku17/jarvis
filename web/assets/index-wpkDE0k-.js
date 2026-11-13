@@ -13,64 +13,101 @@ void main() { uv = p; gl_Position = vec4(p, 0.0, 1.0); }
 `,m=`
 precision highp float;
 varying vec2 uv;
-uniform float t;       // time, seconds
-uniform float level;   // 0..1 voice / mic loudness (smoothed)
-uniform float energy;  // 0..1 how lively: idle low, talking high
-uniform float spin;    // accumulated rotation
+uniform float t;
+uniform float level;
+uniform float energy;
+uniform float spin;
 uniform vec3 c1; uniform vec3 c2; uniform vec3 c3; uniform vec3 c4;
 
-// One flowing ribbon: a wavy band through the sphere, rotated by angle a.
-float ribbon(vec2 q, float a, float freq, float speed, float amp, float width, float seed) {
-  float ca = cos(a), sa = sin(a);
-  vec2 r = vec2(ca * q.x - sa * q.y, sa * q.x + ca * q.y);
-  float wave = sin(r.x * freq + t * speed + seed) * amp
-             + sin(r.x * freq * 1.9 - t * speed * 0.7 + seed * 2.3) * amp * 0.45;
-  float d = abs(r.y - wave);
-  float w = width * (0.6 + 0.4 * (1.0 - r.x * r.x));     // thinner toward the edges
-  return exp(-d * d / (w * w));
+mat3 rotY(float a) { float c = cos(a), s = sin(a); return mat3(c,0.,-s, 0.,1.,0., s,0.,c); }
+mat3 rotX(float a) { float c = cos(a), s = sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }
+mat3 rotZ(float a) { float c = cos(a), s = sin(a); return mat3(c,s,0., -s,c,0., 0.,0.,1.); }
+
+// A ribbon is a thin, wavy sheet of light curling through the ball.
+float ribbon(vec3 p, mat3 m, float f, float sp, float amp, float w, float seed) {
+  vec3 q = m * p;
+  float wave = sin(q.x * f + t * sp + seed) * amp + sin(q.z * f * 1.3 - t * sp * 0.8 + seed * 1.7) * amp * 0.6
+             + sin((q.x + q.z) * f * 0.7 + t * sp * 0.5 + seed * 3.1) * amp * 0.4;
+  float d = q.y - wave;
+  float band = exp(-d * d / (w * w));
+  // fade the sheet into a ribbon (narrow across z), twisting over time
+  float across = q.z * cos(q.x * 1.5 + t * 0.4 + seed) + q.y * 0.3;
+  return band * exp(-across * across / 0.16);
 }
 
 void main() {
-  vec2 q = uv * 1.08;
-  float r = length(q);
-  float R = 0.82 + level * 0.06;                          // sphere breathes with the voice
-  if (r > 1.05) { gl_FragColor = vec4(0.0); return; }
+  vec2 q = uv * 1.1;
+  float R = 0.8 + level * 0.05;
+  vec3 ro = vec3(0.0, 0.0, 2.6);
+  vec3 rd = normalize(vec3(q, -2.6));
+  // ray-sphere intersection
+  float b = dot(ro, rd);
+  float c = dot(ro, ro) - R * R;
+  float h = b * b - c;
+  float r2 = length(q);
 
-  float inside = smoothstep(R + 0.006, R - 0.012, r);
-  // Bend coordinates like a lens so ribbons look like they're inside a ball.
-  vec2 s = q / R;
-  float z = sqrt(max(0.0, 1.0 - dot(s, s)));
-  vec2 lens = s * (0.75 + 0.25 * z);
+  vec3 bg = vec3(0.0);
+  float alpha = 0.0;
+  // soft outer glow even when the ray misses
+  float edge = length(q) / (R * 1.0);
+  float glow = exp(-max(edge - 1.0, 0.0) * (14.0 - level * 6.0));
+  vec3 glowCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) - spin)) * (0.25 + 0.35 * energy + 0.6 * level);
 
-  float amp = 0.12 + energy * 0.18 + level * 0.35;
-  float wid = 0.14 + energy * 0.06 + level * 0.12;
-  float sp = 0.6 + energy * 1.6;
+  if (h < 0.0) {
+    gl_FragColor = vec4(glowCol * glow, glow * (0.25 + 0.3 * energy + 0.5 * level));
+    return;
+  }
+  h = sqrt(h);
+  float tn = -b - h, tf = -b + h;
+  vec3 pn = ro + rd * tn;
+  vec3 nrm = normalize(pn);
 
-  vec3 col = vec3(0.0);
-  col += c1 * ribbon(lens, spin + 0.0, 3.1, sp * 1.00, amp, wid, 0.0);
-  col += c2 * ribbon(lens, spin * -1.3 + 1.1, 2.6, sp * 1.25, amp * 1.1, wid * 0.9, 1.7);
-  col += c3 * ribbon(lens, spin * 0.8 + 2.2, 3.7, sp * 0.85, amp * 0.9, wid * 1.1, 3.1);
-  col += c4 * ribbon(lens, spin * -0.6 + 3.0, 2.2, sp * 1.10, amp * 1.2, wid * 0.8, 4.6);
-  // soft colour haze filling the ball
-  col += (c1 + c2 + c3) * 0.05 * (0.6 + energy) * z;
-  // bright white core where ribbons overlap
-  float lum = dot(col, vec3(0.33));
-  col += vec3(1.0) * smoothstep(0.9, 2.2, lum) * 0.6;
-  col = col / (1.0 + col * 0.55);                         // tone map so overlaps glow, not clip
+  mat3 world = rotY(spin * 0.6) * rotX(sin(t * 0.13) * 0.5 + 0.3);
+  float amp = 0.10 + energy * 0.12 + level * 0.22;
+  float w = 0.055 + level * 0.035;
+  float sp = 0.5 + energy * 1.4;
 
-  // Glass: dark body, a rim light and a highlight at the top left.
-  vec3 glass = vec3(0.02, 0.025, 0.05) * (1.0 - z * 0.5);
-  float rim = pow(1.0 - z, 3.0) * 0.55;
-  vec3 rimCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) + spin)) * rim;
-  float hl = exp(-pow(length(s - vec2(-0.35, 0.45)) / 0.28, 2.0)) * 0.18;
+  mat3 m1 = rotZ(0.3);
+  mat3 m2 = rotZ(1.9) * rotY(1.2);
+  mat3 m3 = rotX(1.2) * rotZ(-0.8);
+  mat3 m4 = rotY(2.4) * rotX(-0.9);
 
-  vec3 ball = glass + col * z + rimCol + vec3(hl);
-  // Outer glow around the sphere.
-  float glow = exp(-max(r - R, 0.0) / (0.05 + level * 0.06)) * (1.0 - inside);
-  vec3 glowCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) - spin)) * glow;
+  // march through the ball front to back, accumulating glowing ribbons
+  vec3 acc = vec3(0.0);
+  float trans = 1.0;
+  const int N = 36;
+  float dt = (tf - tn) / float(N);
+  for (int i = 0; i < N; i++) {
+    float tt = tn + (float(i) + 0.5) * dt;
+    vec3 p = (ro + rd * tt) * (1.0 / R);
+    p = world * p;
+    float d1 = ribbon(p, m1, 2.6, sp, amp, w, 0.0);
+    float d2 = ribbon(p, m2, 2.2, sp * 1.2, amp, w, 1.7);
+    float d3 = ribbon(p, m3, 3.0, sp * 0.9, amp, w, 3.3);
+    float d4 = ribbon(p, m4, 2.4, sp * 1.1, amp, w, 4.9);
+    vec3 e = c1 * d1 + c2 * d2 + c3 * d3 + c4 * d4;
+    float dens = d1 + d2 + d3 + d4;
+    // parts further back are dimmer and cooler: depth you can see
+    float depth = float(i) / float(N);
+    e *= mix(1.25, 0.45, depth);
+    acc += trans * e * dt * (6.0 - energy * 2.0);
+    trans *= exp(-dens * dt * 2.2);
+  }
+  // white-hot where ribbons overlap
+  float lum = dot(acc, vec3(0.333));
+  acc += vec3(1.0) * smoothstep(1.2, 2.6, lum) * 0.35;
+  acc = acc / (1.0 + acc * 0.75);
 
-  vec3 outc = ball * inside + glowCol;
-  float alpha = max(inside, clamp(glow * (0.15 + 0.25 * energy + 0.5 * level), 0.0, 1.0));
-  gl_FragColor = vec4(outc, alpha);
+  // glass shell: fresnel rim, a soft key light, and a sharp specular highlight
+  float fres = pow(1.0 - max(dot(nrm, -rd), 0.0), 3.0);
+  vec3 L = normalize(vec3(-0.5, 0.7, 0.6));
+  float spec = pow(max(dot(reflect(rd, nrm), L), 0.0), 60.0);
+  float spec2 = pow(max(dot(reflect(rd, nrm), normalize(vec3(0.6, -0.5, 0.5))), 0.0), 18.0);
+  vec3 rimCol = mix(c2, c3, 0.5 + 0.5 * sin(atan(q.y, q.x) + spin)) * fres * 0.9;
+  vec3 body = vec3(0.015, 0.02, 0.045) * (0.6 + 0.4 * nrm.y);
+  vec3 col = body + acc + rimCol + vec3(spec) * 0.8 + c3 * spec2 * 0.12;
+
+  float aa = smoothstep(0.0, 0.004, h * h);
+  gl_FragColor = vec4(mix(glowCol * glow, col, aa), max(aa, glow * 0.4));
 }
-`;function h(e){let t=parseInt(e.replace(`#`,``),16);return[(t>>16&255)/255,(t>>8&255)/255,(t&255)/255]}var g={gemma:[`#FF3D9A`,`#7A5CFF`,`#22C7FF`,`#FF8A3D`],claude:[`#FF6A3D`,`#FF3D7F`,`#FFB547`,`#B45CFF`]};function _({phase:e,brain:t,inVol:n,outVol:r}){let i=(0,l.useRef)(null),a=(0,l.useRef)(e),o=(0,l.useRef)(t);return a.current=e,o.current=t,(0,l.useEffect)(()=>{let e=i.current,t=e.getContext(`webgl`,{premultipliedAlpha:!1,alpha:!0,antialias:!0});if(!t)return;let s=(e,n)=>{let r=t.createShader(e);return t.shaderSource(r,n),t.compileShader(r),t.getShaderParameter(r,t.COMPILE_STATUS)||console.error(t.getShaderInfoLog(r)),r},c=t.createProgram();t.attachShader(c,s(t.VERTEX_SHADER,p)),t.attachShader(c,s(t.FRAGMENT_SHADER,m)),t.linkProgram(c),t.useProgram(c);let l=t.createBuffer();t.bindBuffer(t.ARRAY_BUFFER,l),t.bufferData(t.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),t.STATIC_DRAW);let u=t.getAttribLocation(c,`p`);t.enableVertexAttribArray(u),t.vertexAttribPointer(u,2,t.FLOAT,!1,0,0),t.enable(t.BLEND),t.blendFunc(t.SRC_ALPHA,t.ONE_MINUS_SRC_ALPHA);let d=e=>t.getUniformLocation(c,e),f={t:d(`t`),level:d(`level`),energy:d(`energy`),spin:d(`spin`),c:[d(`c1`),d(`c2`),d(`c3`),d(`c4`)]},_=0,v=performance.now(),y=0,b=0,x=.2,S=g.gemma.map(h),ee=v,te=i=>{let s=Math.min(.05,(i-v)/1e3);v=i;let c=Math.min(window.devicePixelRatio||1,2),l=Math.round(e.clientWidth*c),u=Math.round(e.clientHeight*c);(e.width!==l||e.height!==u)&&(e.width=l,e.height=u),t.viewport(0,0,l,u);let d=a.current;x+=((d===`talking`?.85:d===`listening`?.6:d===`thinking`||d===`loading`?.7:.2)-x)*Math.min(1,s*3);let p=d===`talking`?r.current:d===`listening`?n.current:0;b+=(p-b)*Math.min(1,s*(p>b?18:6));let m=d===`thinking`||d===`loading`?2.4:.35+x*.8;y+=s*m;let C=(g[o.current]||g.gemma).map(h);for(let e=0;e<4;e++)for(let t=0;t<3;t++)S[e][t]+=(C[e][t]-S[e][t])*Math.min(1,s*2);t.clearColor(0,0,0,0),t.clear(t.COLOR_BUFFER_BIT),t.uniform1f(f.t,(i-ee)/1e3),t.uniform1f(f.level,b),t.uniform1f(f.energy,x),t.uniform1f(f.spin,y),f.c.forEach((e,n)=>t.uniform3fv(e,S[n])),t.drawArrays(t.TRIANGLE_STRIP,0,4),_=requestAnimationFrame(te)};return _=requestAnimationFrame(te),()=>cancelAnimationFrame(_)},[n,r]),(0,f.jsx)(`canvas`,{ref:i,style:{width:`100%`,height:`100%`,display:`block`}})}var v={loading:`Waking up…`,idle:`Say “Hey Jarvis”`,listening:`Listening…`,thinking:`Thinking…`,talking:``};function y(){let[e,t]=(0,l.useState)(!1),[n,r]=(0,l.useState)(!1),[i,a]=(0,l.useState)(`loading`),[o,s]=(0,l.useState)([]),[c,u]=(0,l.useState)(``),[d,p]=(0,l.useState)(`gemma`),[m,h]=(0,l.useState)(!1),[g,y]=(0,l.useState)({local:``,claude:``}),[b,x]=(0,l.useState)(!1),[S,ee]=(0,l.useState)(``),[te,C]=(0,l.useState)(``),[ne,w]=(0,l.useState)(`piper`),[re,ie]=(0,l.useState)({}),[ae,oe]=(0,l.useState)(``),[se,ce]=(0,l.useState)({calendar:!1,mail:!1}),[le,ue]=(0,l.useState)(!1),de=(0,l.useRef)(null),fe=(0,l.useRef)(null),pe=(0,l.useRef)(null),me=(0,l.useRef)(0),he=(0,l.useRef)(0),ge=(0,l.useRef)([]),_e=(0,l.useRef)(!1),ve=(0,l.useRef)(null),ye=(0,l.useRef)(!1),be=(0,l.useRef)(null);(0,l.useEffect)(()=>{be.current?.scrollIntoView({behavior:`smooth`})},[o]);let xe=e=>{let t=de.current;t?.readyState===WebSocket.OPEN&&t.send(JSON.stringify(e))},Se=()=>{!_e.current&&ge.current.length===0&&ye.current&&(ye.current=!1,xe({type:`playback_done`}))},Ce=(0,l.useCallback)(async()=>{let e=fe.current;if(!e||_e.current)return;let t=ge.current.shift();if(!t)return Se();_e.current=!0;try{let n=await e.decodeAudioData(t),r=e.createBufferSource();r.buffer=n,r.connect(pe.current),r.onended=()=>{ve.current===r&&(ve.current=null,_e.current=!1,Ce())},ve.current=r,r.start()}catch{_e.current=!1,Ce()}},[]),we=(0,l.useCallback)(()=>{let e=location.protocol===`https:`?`wss`:`ws`,t=new WebSocket(`${e}://${location.host}/ws`);t.binaryType=`arraybuffer`,de.current=t,t.onopen=()=>r(!0),t.onclose=()=>{r(!1),setTimeout(we,1500)},t.onmessage=e=>{if(e.data instanceof ArrayBuffer){ge.current.push(e.data),Ce();return}let t=JSON.parse(e.data);switch(t.type){case`brain`:p(t.brain),h(t.has_key),y({local:t.local_model,claude:t.claude_model}),t.voice&&w(t.voice),t.voices&&ie(t.voices),ce({calendar:!!t.allow_calendar,mail:!!t.allow_mail}),ue(!!t.always_on),oe(``);break;case`voice_loading`:oe(`Loading voice… (the first time downloads about 120 MB)`);break;case`need_key`:x(!0),C(`Add an Anthropic API key to use Claude.`);break;case`key_saved`:C(t.ok?t.removed?`Key removed.`:`Saved in your Mac's Keychain.`:`Couldn't save: ${t.error}`),t.ok&&ee(``);break;case`state`:a(t.state);break;case`user`:s(e=>[...e,{role:`user`,text:t.text}]);break;case`assistant_start`:s(e=>[...e,{role:`assistant`,text:``}]);break;case`assistant_delta`:s(e=>{let n=e.slice(),r=n[n.length-1];return r?.role===`assistant`&&(n[n.length-1]={...r,text:r.text+t.text}),n});break;case`stop_audio`:{ge.current=[],ye.current=!1;let e=ve.current;ve.current=null,_e.current=!1;try{e?.stop()}catch{}break}case`speech_end`:ye.current=!0,Se();break;case`error`:s(e=>[...e,{role:`err`,text:t.message}])}}},[Ce]),Te=async()=>{if(fe.current)return;t(!0);let e=new AudioContext({sampleRate:16e3});fe.current=e,e.state===`suspended`&&document.addEventListener(`click`,()=>e.resume(),{once:!0});let n=e.createAnalyser();n.fftSize=512,n.connect(e.destination),pe.current=n;let r=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:!0,noiseSuppression:!0,autoGainControl:!0}});await e.audioWorklet.addModule(`./mic-worklet.js`);let i=new AudioWorkletNode(e,`mic-frames`);e.createMediaStreamSource(r).connect(i),i.port.onmessage=e=>{e.data instanceof ArrayBuffer?de.current?.readyState===WebSocket.OPEN&&de.current.send(e.data):me.current=Math.min(1,e.data.rms*10)};let a=new Uint8Array(n.fftSize),o=()=>{n.getByteTimeDomainData(a);let e=0;for(let t of a)e+=((t-128)/128)**2;he.current=Math.min(1,Math.sqrt(e/a.length)*6),requestAnimationFrame(o)};o(),we()};(0,l.useEffect)(()=>{new URLSearchParams(location.search).has(`app`)&&Te()},[]);let T=e=>{e.preventDefault();let t=c.trim();t&&(xe({type:`text`,text:t}),u(``))},E=e=>{e===`claude`&&!m?(x(!0),C(`Add an Anthropic API key to use Claude.`)):xe({type:`set_brain`,brain:e})};return(0,f.jsxs)(`div`,{className:`app`,children:[(0,f.jsxs)(`div`,{className:`top`,children:[(0,f.jsxs)(`span`,{children:[(0,f.jsx)(`span`,{className:`dot ${n?`on`:``}`}),`Jarvis `,n?`online`:`offline`]}),(0,f.jsxs)(`span`,{className:`brains`,children:[(0,f.jsxs)(`span`,{className:`seg`,children:[(0,f.jsx)(`button`,{className:d===`gemma`?`on`:``,onClick:()=>E(`gemma`),title:g.local,children:`Gemma`}),(0,f.jsx)(`button`,{className:d===`claude`?`on claude`:``,onClick:()=>E(`claude`),title:g.claude,children:`Claude`})]}),(0,f.jsx)(`button`,{className:`gear`,onClick:()=>x(e=>!e),title:`Settings`,"aria-label":`Settings`,children:`⚙`})]})]}),b&&(0,f.jsxs)(`div`,{className:`settings`,children:[(0,f.jsx)(`div`,{className:`settings-title`,children:`Claude brain`}),(0,f.jsx)(`p`,{className:`muted`,children:`Gemma runs free and offline on this Mac. Claude is smarter but needs internet and an Anthropic API key (paid per use). Get one at console.anthropic.com. It's stored in your Mac's Keychain and never leaves this computer except to talk to Claude.`}),(0,f.jsxs)(`form`,{className:`bar`,onSubmit:e=>{e.preventDefault(),S.trim()&&xe({type:`set_key`,key:S.trim()})},children:[(0,f.jsx)(`input`,{type:`password`,autoComplete:`off`,value:S,onChange:e=>ee(e.target.value),placeholder:m?`Key saved ✓ (paste a new one to replace)`:`sk-ant-…`}),(0,f.jsx)(`button`,{type:`submit`,children:`Save`})]}),(0,f.jsxs)(`div`,{className:`muted row`,children:[(0,f.jsx)(`span`,{children:te||(m?`Ready: ${g.claude}`:`No key yet`)}),m&&(0,f.jsx)(`button`,{className:`link`,onClick:()=>xe({type:`set_key`,key:``}),children:`Remove key`})]}),(0,f.jsx)(`p`,{className:`muted`,children:`Tip: you can also say “switch to Claude” or “switch to Gemma”.`}),(0,f.jsx)(`div`,{className:`settings-title`,children:`Voice`}),(0,f.jsx)(`div`,{className:`voices`,children:Object.entries(re).map(([e,t])=>(0,f.jsx)(`button`,{className:e===ne?`chip on`:`chip`,onClick:()=>{w(e),xe({type:`set_voice`,voice:e})},children:t},e))}),ae&&(0,f.jsx)(`p`,{className:`muted`,children:ae}),(0,f.jsx)(`div`,{className:`settings-title`,children:`Access`}),[`calendar`,`mail`].map(e=>(0,f.jsxs)(`label`,{className:`toggle`,children:[(0,f.jsx)(`input`,{type:`checkbox`,checked:se[e],onChange:t=>xe({type:`set_allow`,what:e,on:t.target.checked})}),`Let Jarvis read your `,e===`calendar`?`Calendar`:`Mail`,` app`]},e)),(0,f.jsx)(`div`,{className:`settings-title`,children:`Always on`}),(0,f.jsxs)(`label`,{className:`toggle`,children:[(0,f.jsx)(`input`,{type:`checkbox`,checked:le,onChange:e=>xe({type:`set_always_on`,on:e.target.checked})}),`Listen for “Hey Jarvis” even with this window closed, show a menu bar icon, and start at login`]})]}),(0,f.jsx)(`div`,{className:`orb-wrap`,onClick:()=>xe({type:`ptt`}),title:`Click to talk`,children:(0,f.jsx)(_,{phase:i,brain:d,inVol:me,outVol:he})}),(0,f.jsx)(`div`,{className:`status`,children:v[i]}),(0,f.jsxs)(`div`,{className:`log`,children:[o.map((e,t)=>(0,f.jsx)(`div`,{className:`msg ${e.role}`,children:e.text},t)),(0,f.jsx)(`div`,{ref:be})]}),(0,f.jsxs)(`form`,{className:`bar`,onSubmit:T,children:[(0,f.jsx)(`input`,{value:c,onChange:e=>u(e.target.value),placeholder:`Or type to Jarvis…`}),(0,f.jsx)(`button`,{type:`submit`,children:`Send`})]}),(0,f.jsx)(`div`,{className:`hint`,children:`Say “Hey Jarvis”, or click the orb to talk without the wake word.`}),!e&&(0,f.jsx)(`button`,{className:`start`,onClick:Te,children:`Start Jarvis`})]})}(0,u.createRoot)(document.getElementById(`root`)).render((0,f.jsx)(l.StrictMode,{children:(0,f.jsx)(y,{})}));
+`;function h(e){let t=parseInt(e.replace(`#`,``),16);return[(t>>16&255)/255,(t>>8&255)/255,(t&255)/255]}var g={gemma:[`#FF3D9A`,`#7A5CFF`,`#22C7FF`,`#FF8A3D`],claude:[`#FF6A3D`,`#FF3D7F`,`#FFB547`,`#B45CFF`]};function _({phase:e,brain:t,inVol:n,outVol:r}){let i=(0,l.useRef)(null),a=(0,l.useRef)(e),o=(0,l.useRef)(t);return a.current=e,o.current=t,(0,l.useEffect)(()=>{let e=i.current,t=e.getContext(`webgl`,{premultipliedAlpha:!1,alpha:!0,antialias:!0});if(!t)return;let s=(e,n)=>{let r=t.createShader(e);return t.shaderSource(r,n),t.compileShader(r),t.getShaderParameter(r,t.COMPILE_STATUS)||console.error(t.getShaderInfoLog(r)),r},c=t.createProgram();t.attachShader(c,s(t.VERTEX_SHADER,p)),t.attachShader(c,s(t.FRAGMENT_SHADER,m)),t.linkProgram(c),t.useProgram(c);let l=t.createBuffer();t.bindBuffer(t.ARRAY_BUFFER,l),t.bufferData(t.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),t.STATIC_DRAW);let u=t.getAttribLocation(c,`p`);t.enableVertexAttribArray(u),t.vertexAttribPointer(u,2,t.FLOAT,!1,0,0),t.enable(t.BLEND),t.blendFunc(t.SRC_ALPHA,t.ONE_MINUS_SRC_ALPHA);let d=e=>t.getUniformLocation(c,e),f={t:d(`t`),level:d(`level`),energy:d(`energy`),spin:d(`spin`),c:[d(`c1`),d(`c2`),d(`c3`),d(`c4`)]},_=0,v=performance.now(),y=0,b=0,x=.2,S=g.gemma.map(h),ee=v,te=i=>{let s=Math.min(.05,(i-v)/1e3);v=i;let c=Math.min(window.devicePixelRatio||1,1.5),l=Math.round(e.clientWidth*c),u=Math.round(e.clientHeight*c);(e.width!==l||e.height!==u)&&(e.width=l,e.height=u),t.viewport(0,0,l,u);let d=a.current;x+=((d===`talking`?.85:d===`listening`?.6:d===`thinking`||d===`loading`?.7:.2)-x)*Math.min(1,s*3);let p=d===`talking`?r.current:d===`listening`?n.current:0;b+=(p-b)*Math.min(1,s*(p>b?18:6));let m=d===`thinking`||d===`loading`?2.4:.35+x*.8;y+=s*m;let C=(g[o.current]||g.gemma).map(h);for(let e=0;e<4;e++)for(let t=0;t<3;t++)S[e][t]+=(C[e][t]-S[e][t])*Math.min(1,s*2);t.clearColor(0,0,0,0),t.clear(t.COLOR_BUFFER_BIT),t.uniform1f(f.t,(i-ee)/1e3),t.uniform1f(f.level,b),t.uniform1f(f.energy,x),t.uniform1f(f.spin,y),f.c.forEach((e,n)=>t.uniform3fv(e,S[n])),t.drawArrays(t.TRIANGLE_STRIP,0,4),_=requestAnimationFrame(te)};return _=requestAnimationFrame(te),()=>cancelAnimationFrame(_)},[n,r]),(0,f.jsx)(`canvas`,{ref:i,style:{width:`100%`,height:`100%`,display:`block`}})}var v={loading:`Waking up…`,idle:`Say “Hey Jarvis”`,listening:`Listening…`,thinking:`Thinking…`,talking:``};function y(){let[e,t]=(0,l.useState)(!1),[n,r]=(0,l.useState)(!1),[i,a]=(0,l.useState)(`loading`),[o,s]=(0,l.useState)([]),[c,u]=(0,l.useState)(``),[d,p]=(0,l.useState)(`gemma`),[m,h]=(0,l.useState)(!1),[g,y]=(0,l.useState)({local:``,claude:``}),[b,x]=(0,l.useState)(!1),[S,ee]=(0,l.useState)(``),[te,C]=(0,l.useState)(``),[ne,w]=(0,l.useState)(`piper`),[re,ie]=(0,l.useState)({}),[ae,oe]=(0,l.useState)(``),[se,ce]=(0,l.useState)({calendar:!1,mail:!1}),[le,ue]=(0,l.useState)(!1),de=(0,l.useRef)(null),fe=(0,l.useRef)(null),pe=(0,l.useRef)(null),me=(0,l.useRef)(0),he=(0,l.useRef)(0),ge=(0,l.useRef)([]),_e=(0,l.useRef)(!1),ve=(0,l.useRef)(null),ye=(0,l.useRef)(!1),be=(0,l.useRef)(null);(0,l.useEffect)(()=>{be.current?.scrollIntoView({behavior:`smooth`})},[o]);let xe=e=>{let t=de.current;t?.readyState===WebSocket.OPEN&&t.send(JSON.stringify(e))},Se=()=>{!_e.current&&ge.current.length===0&&ye.current&&(ye.current=!1,xe({type:`playback_done`}))},Ce=(0,l.useCallback)(async()=>{let e=fe.current;if(!e||_e.current)return;let t=ge.current.shift();if(!t)return Se();_e.current=!0;try{let n=await e.decodeAudioData(t),r=e.createBufferSource();r.buffer=n,r.connect(pe.current),r.onended=()=>{ve.current===r&&(ve.current=null,_e.current=!1,Ce())},ve.current=r,r.start()}catch{_e.current=!1,Ce()}},[]),we=(0,l.useCallback)(()=>{let e=location.protocol===`https:`?`wss`:`ws`,t=new WebSocket(`${e}://${location.host}/ws`);t.binaryType=`arraybuffer`,de.current=t,t.onopen=()=>r(!0),t.onclose=()=>{r(!1),setTimeout(we,1500)},t.onmessage=e=>{if(e.data instanceof ArrayBuffer){ge.current.push(e.data),Ce();return}let t=JSON.parse(e.data);switch(t.type){case`brain`:p(t.brain),h(t.has_key),y({local:t.local_model,claude:t.claude_model}),t.voice&&w(t.voice),t.voices&&ie(t.voices),ce({calendar:!!t.allow_calendar,mail:!!t.allow_mail}),ue(!!t.always_on),oe(``);break;case`voice_loading`:oe(`Loading voice… (the first time downloads about 120 MB)`);break;case`need_key`:x(!0),C(`Add an Anthropic API key to use Claude.`);break;case`key_saved`:C(t.ok?t.removed?`Key removed.`:`Saved in your Mac's Keychain.`:`Couldn't save: ${t.error}`),t.ok&&ee(``);break;case`state`:a(t.state);break;case`user`:s(e=>[...e,{role:`user`,text:t.text}]);break;case`assistant_start`:s(e=>[...e,{role:`assistant`,text:``}]);break;case`assistant_delta`:s(e=>{let n=e.slice(),r=n[n.length-1];return r?.role===`assistant`&&(n[n.length-1]={...r,text:r.text+t.text}),n});break;case`stop_audio`:{ge.current=[],ye.current=!1;let e=ve.current;ve.current=null,_e.current=!1;try{e?.stop()}catch{}break}case`speech_end`:ye.current=!0,Se();break;case`error`:s(e=>[...e,{role:`err`,text:t.message}])}}},[Ce]),Te=async()=>{if(fe.current)return;t(!0);let e=new AudioContext({sampleRate:16e3});fe.current=e,e.state===`suspended`&&document.addEventListener(`click`,()=>e.resume(),{once:!0});let n=e.createAnalyser();n.fftSize=512,n.connect(e.destination),pe.current=n;let r=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:!0,noiseSuppression:!0,autoGainControl:!0}});await e.audioWorklet.addModule(`./mic-worklet.js`);let i=new AudioWorkletNode(e,`mic-frames`);e.createMediaStreamSource(r).connect(i),i.port.onmessage=e=>{e.data instanceof ArrayBuffer?de.current?.readyState===WebSocket.OPEN&&de.current.send(e.data):me.current=Math.min(1,e.data.rms*10)};let a=new Uint8Array(n.fftSize),o=()=>{n.getByteTimeDomainData(a);let e=0;for(let t of a)e+=((t-128)/128)**2;he.current=Math.min(1,Math.sqrt(e/a.length)*6),requestAnimationFrame(o)};o(),we()};(0,l.useEffect)(()=>{new URLSearchParams(location.search).has(`app`)&&Te()},[]);let T=e=>{e.preventDefault();let t=c.trim();t&&(xe({type:`text`,text:t}),u(``))},E=e=>{e===`claude`&&!m?(x(!0),C(`Add an Anthropic API key to use Claude.`)):xe({type:`set_brain`,brain:e})};return(0,f.jsxs)(`div`,{className:`app`,children:[(0,f.jsxs)(`div`,{className:`top`,children:[(0,f.jsxs)(`span`,{children:[(0,f.jsx)(`span`,{className:`dot ${n?`on`:``}`}),`Jarvis `,n?`online`:`offline`]}),(0,f.jsxs)(`span`,{className:`brains`,children:[(0,f.jsxs)(`span`,{className:`seg`,children:[(0,f.jsx)(`button`,{className:d===`gemma`?`on`:``,onClick:()=>E(`gemma`),title:g.local,children:`Gemma`}),(0,f.jsx)(`button`,{className:d===`claude`?`on claude`:``,onClick:()=>E(`claude`),title:g.claude,children:`Claude`})]}),(0,f.jsx)(`button`,{className:`gear`,onClick:()=>x(e=>!e),title:`Settings`,"aria-label":`Settings`,children:`⚙`})]})]}),b&&(0,f.jsxs)(`div`,{className:`settings`,children:[(0,f.jsx)(`div`,{className:`settings-title`,children:`Claude brain`}),(0,f.jsx)(`p`,{className:`muted`,children:`Gemma runs free and offline on this Mac. Claude is smarter but needs internet and an Anthropic API key (paid per use). Get one at console.anthropic.com. It's stored in your Mac's Keychain and never leaves this computer except to talk to Claude.`}),(0,f.jsxs)(`form`,{className:`bar`,onSubmit:e=>{e.preventDefault(),S.trim()&&xe({type:`set_key`,key:S.trim()})},children:[(0,f.jsx)(`input`,{type:`password`,autoComplete:`off`,value:S,onChange:e=>ee(e.target.value),placeholder:m?`Key saved ✓ (paste a new one to replace)`:`sk-ant-…`}),(0,f.jsx)(`button`,{type:`submit`,children:`Save`})]}),(0,f.jsxs)(`div`,{className:`muted row`,children:[(0,f.jsx)(`span`,{children:te||(m?`Ready: ${g.claude}`:`No key yet`)}),m&&(0,f.jsx)(`button`,{className:`link`,onClick:()=>xe({type:`set_key`,key:``}),children:`Remove key`})]}),(0,f.jsx)(`p`,{className:`muted`,children:`Tip: you can also say “switch to Claude” or “switch to Gemma”.`}),(0,f.jsx)(`div`,{className:`settings-title`,children:`Voice`}),(0,f.jsx)(`div`,{className:`voices`,children:Object.entries(re).map(([e,t])=>(0,f.jsx)(`button`,{className:e===ne?`chip on`:`chip`,onClick:()=>{w(e),xe({type:`set_voice`,voice:e})},children:t},e))}),ae&&(0,f.jsx)(`p`,{className:`muted`,children:ae}),(0,f.jsx)(`div`,{className:`settings-title`,children:`Access`}),[`calendar`,`mail`].map(e=>(0,f.jsxs)(`label`,{className:`toggle`,children:[(0,f.jsx)(`input`,{type:`checkbox`,checked:se[e],onChange:t=>xe({type:`set_allow`,what:e,on:t.target.checked})}),`Let Jarvis read your `,e===`calendar`?`Calendar`:`Mail`,` app`]},e)),(0,f.jsx)(`div`,{className:`settings-title`,children:`Always on`}),(0,f.jsxs)(`label`,{className:`toggle`,children:[(0,f.jsx)(`input`,{type:`checkbox`,checked:le,onChange:e=>xe({type:`set_always_on`,on:e.target.checked})}),`Listen for “Hey Jarvis” even with this window closed, show a menu bar icon, and start at login`]})]}),(0,f.jsx)(`div`,{className:`orb-wrap`,onClick:()=>xe({type:`ptt`}),title:`Click to talk`,children:(0,f.jsx)(_,{phase:i,brain:d,inVol:me,outVol:he})}),(0,f.jsx)(`div`,{className:`status`,children:v[i]}),(0,f.jsxs)(`div`,{className:`log`,children:[o.map((e,t)=>(0,f.jsx)(`div`,{className:`msg ${e.role}`,children:e.text},t)),(0,f.jsx)(`div`,{ref:be})]}),(0,f.jsxs)(`form`,{className:`bar`,onSubmit:T,children:[(0,f.jsx)(`input`,{value:c,onChange:e=>u(e.target.value),placeholder:`Or type to Jarvis…`}),(0,f.jsx)(`button`,{type:`submit`,children:`Send`})]}),(0,f.jsx)(`div`,{className:`hint`,children:`Say “Hey Jarvis”, or click the orb to talk without the wake word.`}),!e&&(0,f.jsx)(`button`,{className:`start`,onClick:Te,children:`Start Jarvis`})]})}(0,u.createRoot)(document.getElementById(`root`)).render((0,f.jsx)(l.StrictMode,{children:(0,f.jsx)(y,{})}));
