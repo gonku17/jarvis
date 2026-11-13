@@ -2,7 +2,7 @@
 # Pulls the latest Jarvis from GitHub (if repo.txt names one) and installs it in place.
 # Keeps memory.json, settings.json, jarvis.log, .venv and models/. Safe to run any time.
 set -u
-DIR="${JARVIS_DIR:-$HOME/Documents/Jarvis}"
+DIR="${JARVIS_DIR:-$HOME/Jarvis}"
 cd "$DIR" || exit 0
 [ -f repo.txt ] || exit 0
 REPO="$(tr -d ' \n' < repo.txt)"          # e.g. gonku17/jarvis

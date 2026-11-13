@@ -1,6 +1,9 @@
 #!/bin/bash
 # Jarvis.app: checks for an update, then runs the launcher from the Jarvis folder.
-JARVIS_DIR="${JARVIS_DIR:-$HOME/Documents/Jarvis}"
+# ~/Jarvis is preferred: macOS blocks apps from reading ~/Documents without a permission.
+if [ -z "${JARVIS_DIR:-}" ]; then
+  if [ -d "$HOME/Jarvis" ]; then JARVIS_DIR="$HOME/Jarvis"; else JARVIS_DIR="$HOME/Documents/Jarvis"; fi
+fi
 export JARVIS_DIR PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 [ -f "$JARVIS_DIR/update.sh" ] && bash "$JARVIS_DIR/update.sh" >>"$JARVIS_DIR/update.log" 2>&1
 exec bash "$JARVIS_DIR/launch.sh" "$@"

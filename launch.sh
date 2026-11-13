@@ -1,6 +1,6 @@
 #!/bin/bash
 # Jarvis launcher (lives in the Jarvis folder so updates can replace it).
-JARVIS_DIR="${JARVIS_DIR:-$HOME/Documents/Jarvis}"
+JARVIS_DIR="${JARVIS_DIR:-$HOME/Jarvis}"
 URL="http://127.0.0.1:8765/?app=1"
 LOG="$JARVIS_DIR/jarvis.log"
 PROFILE="$HOME/Library/Application Support/Jarvis/window"

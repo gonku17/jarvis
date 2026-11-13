@@ -323,6 +323,8 @@ set out to ""
 tell application "Calendar"
   repeat with c in calendars
     try
+      -- skip Birthdays, Holidays and other subscribed calendars: they're huge and slow to search
+      if (writable of c) is false and (name of c) is not in {{"Work", "Home", "Family"}} then error "skip"
       set evs to (every event of c whose start date >= startD and start date < endD)
       repeat with e in evs
         set out to out & ((start date of e) as «class isot» as string) & "|" & (allday event of e) & "|" & (summary of e) & linefeed
@@ -387,7 +389,9 @@ def describe_events(events, when: str) -> str:
 MAIL_SCRIPT = """
 tell application "Mail"
   set out to (unread count of inbox) as string & linefeed
-  set msgs to messages 1 thru {n} of inbox
+  set total to count of messages of inbox
+  if total < {n} then set msgs to messages of inbox
+  if total >= {n} then set msgs to messages 1 thru {n} of inbox
   repeat with m in msgs
     set out to out & "<<MSG>>" & (sender of m) & "|" & (subject of m) & "|" & ((date received of m) as «class isot» as string) & "|" & (read status of m) & linefeed
     {body}
@@ -647,14 +651,14 @@ end tell"""
             parts.append(res[0])
         if self.allowed("calendar"):
             try:
-                events = await loop.run_in_executor(None, calendar_events, 0, 1)
+                events = await asyncio.wait_for(loop.run_in_executor(None, calendar_events, 0, 1), 8)
                 events = [e for e in events if e[1] or e[0] >= now - dt.timedelta(minutes=30)]
                 parts.append(describe_events(events, "for the rest of today"))
             except Exception as e:
                 log.warning("briefing calendar failed: %s", e)
         if self.allowed("mail"):
             try:
-                unread, _ = await loop.run_in_executor(None, latest_mail, 1, False)
+                unread, _ = await asyncio.wait_for(loop.run_in_executor(None, latest_mail, 1, False), 8)
                 if unread:
                     parts.append(f"You have {unread} unread email{'s' if unread != 1 else ''}.")
             except Exception as e:
