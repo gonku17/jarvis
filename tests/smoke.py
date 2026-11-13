@@ -123,6 +123,8 @@ async def main():
                 if m["type"] == "assistant_delta" and "timer" in m["text"].lower():
                     got = True
             if got:  # let the announcement finish before the next question
+                while (await c.recv(20))["type"] != "speech_end":
+                    pass
                 while c.state != "listening":
                     await c.recv(20)
             check("timer announcement", got, "spoke when the timer finished" if got else "no announcement within 15 s")
