@@ -226,7 +226,12 @@ def run_menu_bar() -> None:
 
     class JarvisBar(rumps.App):
         def __init__(self) -> None:
-            super().__init__("Jarvis", title="○", quit_button=None)
+            icon = Path(__file__).with_name("menubar-icon.png")
+            if icon.exists():
+                super().__init__("Jarvis", icon=str(icon), template=False, quit_button=None)
+            else:
+                super().__init__("Jarvis", title="○", quit_button=None)
+            self.has_icon = icon.exists()
             self.misses = 0
             self.status_item = rumps.MenuItem("Waking up…")
             self.gemma = rumps.MenuItem("Brain: Gemma (on this Mac)", callback=lambda _: self.cmd("set_brain", brain="gemma"))
@@ -265,7 +270,10 @@ def run_menu_bar() -> None:
                 return
             self.misses = 0
             state = st.get("state", "idle")
-            self.title = ICONS.get(state, "◉")
+            if self.has_icon:
+                self.title = {"listening": "●", "thinking": "…", "talking": "♪"}.get(state, None)
+            else:
+                self.title = ICONS.get(state, "◉")
             self.status_item.title = LABELS.get(state, state)
             self.gemma.state = st.get("brain") == "gemma"
             self.claude.state = st.get("brain") == "claude"

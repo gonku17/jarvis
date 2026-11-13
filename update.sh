@@ -38,10 +38,18 @@ if [ ! -d "$HOME/Applications/Jarvis.app" ] && [ ! -d "/Applications/Jarvis.app"
   mkdir -p "$HOME/Applications/Jarvis.app"
   NEW_APP=1
 fi
+LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 for APP in "$HOME/Applications/Jarvis.app" "/Applications/Jarvis.app"; do
-  [ -d "$APP" ] && rsync -a "$SRC/Jarvis.app/" "$APP/" && chmod +x "$APP/Contents/MacOS/Jarvis" \
-    && xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+  [ -d "$APP" ] || continue
+  OLD_ICON="$(shasum "$APP/Contents/Resources/Jarvis.icns" 2>/dev/null | cut -c1-40)"
+  rsync -a "$SRC/Jarvis.app/" "$APP/" && chmod +x "$APP/Contents/MacOS/Jarvis"
+  xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+  if [ "$OLD_ICON" != "$(shasum "$APP/Contents/Resources/Jarvis.icns" | cut -c1-40)" ]; then
+    # New icon: tell macOS so the Dock and Finder stop showing the cached old one.
+    touch "$APP"; [ -x "$LSREG" ] && "$LSREG" -f "$APP"; ICON_CHANGED=1
+  fi
 done
+[ "${ICON_CHANGED:-0}" = 1 ] && [ "${NEW_APP:-0}" != 1 ] && killall Dock 2>/dev/null
 if [ "${NEW_APP:-0}" = 1 ]; then
   defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$HOME/Applications/Jarvis.app</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>" && killall Dock
 fi
