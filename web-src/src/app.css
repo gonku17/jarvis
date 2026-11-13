@@ -51,3 +51,4 @@ body {
 .toggle { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--fg); cursor: pointer; }
 .toggle input { accent-color: #7fe3ff; width: 16px; height: 16px; }
 .settings { max-height: 70vh; overflow-y: auto; }
+.msg.old { opacity: 0.55; }

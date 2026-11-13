@@ -50,6 +50,14 @@ HISTORY_TURNS = 6
 # Interrupting Jarvis while it talks: "wake" = only "Hey Jarvis", "voice" = also sustained loud speech.
 BARGE_IN = os.environ.get("JARVIS_BARGE_IN", "voice")
 
+PERSONALITIES = {
+    "butler": ("Classic butler", "You are J.A.R.V.I.S., a calm, witty and very capable personal assistant with dry British humour."),
+    "friendly": ("Friendly", "You are Jarvis, a warm, upbeat and encouraging personal assistant who talks like a good friend."),
+    "brief": ("Straight to the point", "You are Jarvis, a no-nonsense assistant. Give the shortest useful answer, with no small talk."),
+    "sarcastic": ("Cheeky", "You are J.A.R.V.I.S., a brilliant assistant with a cheeky, sarcastic streak who still always helps."),
+}
+
+
 def system_prompt(brain: str) -> str:
     where = (
         "Your voice and ears run on the user's own computer; your thinking is powered by Claude."
@@ -57,7 +65,7 @@ def system_prompt(brain: str) -> str:
         else "You run entirely on the user's own computer, powered by Gemma."
     )
     return (
-        f"You are J.A.R.V.I.S., a calm, witty and very capable personal assistant. {where} "
+        f"{PERSONALITIES.get(load_settings().get('personality', 'butler'), PERSONALITIES['butler'])[1]} {where} "
         f"Address the user as '{skills.preferred_name() or USER_NAME}'. Your replies are spoken aloud, so answer in one to three "
         "short conversational sentences. Never use markdown, lists, emoji or code blocks. "
         "If you don't know something, say so briefly. The user can switch your brain by saying "
@@ -407,6 +415,8 @@ class Session:
             allow_calendar=bool(load_settings().get("allow_calendar")),
             allow_mail=bool(load_settings().get("allow_mail")),
             always_on=bool(load_settings().get("always_on")),
+            personality=load_settings().get("personality", "butler"),
+            personalities={k: v[0] for k, v in PERSONALITIES.items()},
             voices=VOICES,
         )
 
@@ -640,6 +650,18 @@ class Session:
         elif kind == "set_allow" and msg.get("what") in ("calendar", "mail"):
             save_settings(**{f"allow_{msg['what']}": bool(msg.get("on"))})
             await self.send_brain()
+        elif kind == "set_personality" and msg.get("personality") in PERSONALITIES:
+            save_settings(personality=msg["personality"])
+            await self.send_brain()
+            await self.speak_only({"butler": "Very good, sir. Back to my usual self.",
+                                   "friendly": "Hey! This is me being friendly. How's it going?",
+                                   "brief": "Understood. Short answers.",
+                                   "sarcastic": "Oh wonderful, a personality change. I'm thrilled."}[msg["personality"]])
+        elif kind == "clear_history":
+            skills.memory.data["history"] = []
+            skills.memory.save()
+            self.history = []
+            await self.send(type="history", turns=[])
         elif kind == "set_always_on":
             await set_always_on(bool(msg.get("on")))
             for s in list(SESSIONS):
@@ -771,6 +793,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
     SESSIONS.add(session)
     await session.send(type="hello", model=LLM_MODEL)
     await session.send_brain()
+    await session.send(type="history", turns=skills.memory.recent(15))
 
     async def announce_ready() -> None:
         if not READY.is_set():

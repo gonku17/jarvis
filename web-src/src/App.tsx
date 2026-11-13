@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { SiriOrb } from "./SiriOrb"
 
 type Phase = "loading" | "idle" | "listening" | "thinking" | "talking"
-type Msg = { role: "user" | "assistant" | "err"; text: string }
+type Msg = { role: "user" | "assistant" | "err"; text: string; old?: boolean }
 
 const STATUS: Record<Phase, string> = {
   loading: "Waking up…",
@@ -29,6 +29,8 @@ export default function App() {
   const [voiceNote, setVoiceNote] = useState("")
   const [allow, setAllow] = useState({ calendar: false, mail: false })
   const [alwaysOn, setAlwaysOn] = useState(false)
+  const [personality, setPersonality] = useState("butler")
+  const [personalities, setPersonalities] = useState<Record<string, string>>({})
 
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -109,6 +111,8 @@ export default function App() {
           if (m.voices) setVoices(m.voices)
           setAllow({ calendar: !!m.allow_calendar, mail: !!m.allow_mail })
           setAlwaysOn(!!m.always_on)
+          if (m.personality) setPersonality(m.personality)
+          if (m.personalities) setPersonalities(m.personalities)
           setVoiceNote("")
           break
         case "voice_loading":
@@ -127,6 +131,10 @@ export default function App() {
           break
         case "user":
           setLog((l) => [...l, { role: "user", text: m.text }])
+          break
+        case "history":
+          setLog((m.turns || []).map((x: { role: string; content: string }) => ({
+            role: x.role === "user" ? "user" : "assistant", text: x.content, old: true }) as Msg))
           break
         case "assistant_start":
           setLog((l) => [...l, { role: "assistant", text: "" }])
@@ -309,6 +317,15 @@ export default function App() {
               Let Jarvis read your {what === "calendar" ? "Calendar" : "Mail"} app
             </label>
           ))}
+          <div className="settings-title">Personality</div>
+          <div className="voices">
+            {Object.entries(personalities).map(([id, label]) => (
+              <button key={id} className={"chip" + (personality === id ? " on" : "")}
+                onClick={() => send({ type: "set_personality", personality: id })}>{label}</button>
+            ))}
+          </div>
+          <div className="settings-title">Conversation history</div>
+          <button className="chip" onClick={() => send({ type: "clear_history" })}>Clear history</button>
           <div className="settings-title">Always on</div>
           <label className="toggle">
             <input
@@ -328,7 +345,7 @@ export default function App() {
 
       <div className="log">
         {log.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>
+          <div key={i} className={`msg ${m.role}${m.old ? " old" : ""}`}>
             {m.text}
           </div>
         ))}

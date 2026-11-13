@@ -347,6 +347,33 @@ def calendar_events(offset_days: int = 0, span_days: int = 1) -> list[tuple[dt.d
     return sorted(events)
 
 
+def screen_text() -> str | None:
+    """Screenshot the main display and read its text with macOS's Vision framework. None = no permission."""
+    import tempfile
+    path = Path(tempfile.gettempdir()) / "jarvis-screen.png"
+    r = subprocess.run(["screencapture", "-x", "-C", str(path)], capture_output=True)
+    if r.returncode != 0 or not path.exists():
+        return None
+    try:
+        import Vision
+        from Foundation import NSURL
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        req.setRecognitionLevel_(0)  # accurate
+        handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(NSURL.fileURLWithPath_(str(path)), None)
+        ok = handler.performRequests_error_([req], None)
+        lines = []
+        for obs in (req.results() or []):
+            cand = obs.topCandidates_(1)
+            if cand:
+                lines.append(str(cand[0].string()))
+        return "\n".join(lines)
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def describe_events(events, when: str) -> str:
     if not events:
         return f"You've got nothing on your calendar {when}."
@@ -413,8 +440,9 @@ class Skills:
 
     async def handle(self, text: str) -> Result | None:
         t = text.lower().strip().rstrip(".!?")
-        for fn in (self.memory_skill, self.timer_skill, self.reminder_skill, self.app_skill,
-                   self.volume_skill, self.music_skill, self.shortcut_skill, self.time_skill,
+        for fn in (self.memory_skill, self.briefing_skill, self.screen_skill, self.file_skill,
+                   self.timer_skill, self.reminder_skill, self.app_skill,
+                   self.volume_skill, self.music_skill, self.play_skill, self.shortcut_skill, self.time_skill,
                    self.calendar_skill, self.mail_skill,
                    self.weather_skill, self.news_skill, self.search_skill):
             try:
@@ -555,6 +583,129 @@ class Skills:
                "skip": "next track", "next": "next track", "previous": "previous track"}[m.group(1)]
         osascript(f"tell application {as_str(player)} to {cmd}")
         return Result(reply="")
+
+    # -- play a particular song, artist, album or playlist
+    async def play_skill(self, t: str, raw: str) -> Result | None:
+        m = re.match(r"^(?:play|put on) (?:some |the song |the album |the playlist |my )?(.+?)(?: on (spotify|apple music|music))?$", t)
+        if not m or m.group(1) in ("music", "something", "a song", "it"):
+            return None
+        what, where = m.group(1).strip(), (m.group(2) or "")
+        spotify = "spotify" in where
+        if not spotify and not where:
+            try:
+                spotify = osascript('application "Spotify" is running') == "true"
+            except Exception:
+                spotify = False
+        if not spotify:
+            q = as_str(what)
+            script = f"""
+tell application "Music"
+  set hits to (every playlist whose name contains {q})
+  if hits is not {{}} then
+    play item 1 of hits
+    return "playlist:" & name of item 1 of hits
+  end if
+  set hits to (every track of library playlist 1 whose name contains {q} or artist contains {q} or album contains {q})
+  if hits is {{}} then return ""
+  set n to count of hits
+  if n > 1 then
+    set tmp to "Jarvis queue"
+    if exists playlist tmp then delete playlist tmp
+    set pl to make new playlist with properties {{name:tmp}}
+    repeat with tr in hits
+      duplicate tr to pl
+    end repeat
+    play pl
+  else
+    play item 1 of hits
+  end if
+  return (name of item 1 of hits) & " by " & (artist of item 1 of hits)
+end tell"""
+            loop = asyncio.get_running_loop()
+            got = await loop.run_in_executor(None, osascript, script)
+            if got:
+                return Result(reply=f"Playing {got.replace('playlist:', 'your playlist ')}.")
+            if "music" in where:
+                return Result(reply=f"I couldn't find {what} in your music library.")
+        # Spotify: open its search for it (playing a search result needs a Spotify account link).
+        subprocess.Popen(["open", "spotify:search:" + what.replace(" ", "%20")])
+        return Result(reply=f"Here's {what} on Spotify. Pick one and I'll leave you to it.")
+
+    # -- morning briefing
+    async def briefing_skill(self, t: str, raw: str) -> Result | None:
+        if not re.fullmatch(r"(?:good morning(?: jarvis)?|morning(?: jarvis)?|(?:give me )?(?:my|the) (?:morning |daily )?briefing|brief me|what did i miss)", t):
+            return None
+        now = dt.datetime.now()
+        hello = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
+        name = self.preferred_name()
+        parts = [f"{hello}{', ' + name if name else ''}. It's {now.strftime('%A the')} {now.day}{'th' if 11 <= now.day <= 13 else {1:'st',2:'nd',3:'rd'}.get(now.day % 10, 'th')}, {now.strftime('%-I:%M %p')}."]
+        place = self.memory.fact_value(r"lives in (.+)")
+        loop = asyncio.get_running_loop()
+        jobs = [weather(place, tomorrow=False), headlines(3)]
+        res = await asyncio.gather(*jobs, return_exceptions=True)
+        if isinstance(res[0], str):
+            parts.append(res[0])
+        if self.allowed("calendar"):
+            try:
+                events = await loop.run_in_executor(None, calendar_events, 0, 1)
+                events = [e for e in events if e[1] or e[0] >= now - dt.timedelta(minutes=30)]
+                parts.append(describe_events(events, "for the rest of today"))
+            except Exception as e:
+                log.warning("briefing calendar failed: %s", e)
+        if self.allowed("mail"):
+            try:
+                unread, _ = await loop.run_in_executor(None, latest_mail, 1, False)
+                if unread:
+                    parts.append(f"You have {unread} unread email{'s' if unread != 1 else ''}.")
+            except Exception as e:
+                log.warning("briefing mail failed: %s", e)
+        if isinstance(res[1], str):
+            parts.append(res[1].replace("Here are the top headlines from the BBC.", "In the news:"))
+        return Result(reply=" ".join(parts))
+
+    # -- find files with Spotlight
+    async def file_skill(self, t: str, raw: str) -> Result | None:
+        m = re.match(r"^(?:find|open|where(?:'s| is)|show me|locate) (?:my |the )?(?:file|document|doc|pdf|spreadsheet|presentation|folder|photo|picture)s? (?:called |named |about |for )?(.+)$", t)
+        if not m:
+            return None
+        query = m.group(1).strip()
+        opening = t.startswith("open")
+        loop = asyncio.get_running_loop()
+
+        def search() -> list[str]:
+            out = subprocess.run(["mdfind", "-onlyin", str(Path.home()), "-name", query],
+                                 capture_output=True, text=True, timeout=10).stdout.splitlines()
+            out = [p for p in out if "/Library/" not in p and "/." not in p]
+            if not out:  # fall back to searching inside documents too
+                out = subprocess.run(["mdfind", "-onlyin", str(Path.home()), query],
+                                     capture_output=True, text=True, timeout=10).stdout.splitlines()
+                out = [p for p in out if "/Library/" not in p and "/." not in p]
+            out.sort(key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0, reverse=True)
+            return out[:5]
+
+        hits = await loop.run_in_executor(None, search)
+        if not hits:
+            return Result(reply=f"I couldn't find anything called {query}.")
+        best = hits[0]
+        if opening:
+            subprocess.Popen(["open", best])
+            return Result(reply=f"Opening {Path(best).name}.")
+        subprocess.Popen(["open", "-R", best])
+        more = f" I found {len(hits)} matches; this is the most recent." if len(hits) > 1 else ""
+        return Result(reply=f"Found {Path(best).name}, in {Path(best).parent.name}. I've shown it in Finder.{more}")
+
+    # -- what's on my screen (macOS text recognition, all on this Mac)
+    async def screen_skill(self, t: str, raw: str) -> Result | None:
+        if not re.search(r"\b(?:on|read) (?:my|the|this) screen\b|\bwhat am i (?:looking at|reading)\b|\bsummari[sz]e (?:this|my screen|what i'm reading)\b", t):
+            return None
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, screen_text)
+        if text is None:
+            return Result(reply="I can't see your screen yet. Allow Jarvis under System Settings, Privacy and Security, Screen Recording, then ask me again.")
+        if not text.strip():
+            return Result(reply="I can't make out any text on your screen right now.")
+        return Result(context=("The user asked: " + raw + "\nHere is the text currently visible on their screen "
+                               "(from on-device text recognition, may be jumbled):\n" + text[:6000]))
 
     # -- Shortcuts app
     async def shortcut_skill(self, t: str, raw: str) -> Result | None:
