@@ -16,13 +16,16 @@ if ! curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
   for _ in $(seq 30); do curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
 fi
 
-# 2. Jarvis server (exits by itself ~20s after the window closes)
+# 2. Jarvis server (exits by itself ~20s after the window closes, unless Always on is enabled)
 if ! curl -s -m 1 -o /dev/null http://127.0.0.1:8765/; then
   cd "$JARVIS_DIR" || fail "Can't open $JARVIS_DIR"
   JARVIS_EXIT_WHEN_IDLE=1 nohup .venv/bin/python server.py >"$LOG" 2>&1 &
   for _ in $(seq 40); do curl -s -m 1 -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
   curl -s -m 1 -o /dev/null http://127.0.0.1:8765/ || fail "Jarvis didn't start. See $LOG"
 fi
+
+# Started at login for Always on: the server keeps running with the menu bar icon; no window.
+[ "${1:-}" = "--background" ] && exit 0
 
 # 3. The orb window: a Chromium-based browser in app mode (own window, no tabs), else Safari.
 for app in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium"; do

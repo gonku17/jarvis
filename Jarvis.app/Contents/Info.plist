@@ -12,5 +12,7 @@
   <key>CFBundleIconFile</key><string>Jarvis</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Jarvis listens for "Hey Jarvis" and to what you say.</string>
+  <key>NSAppleEventsUsageDescription</key><string>Jarvis uses this to read your calendar and mail, set reminders, and control music when you ask.</string>
 </dict>
 </plist>

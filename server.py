@@ -368,6 +368,7 @@ class Session:
         self.loop = asyncio.get_running_loop()
         self.brain = load_settings().get("brain", "gemma")
         self.history = skills.memory.recent(4)  # carry on from last time
+        self.voice_barge_in = BARGE_IN == "voice"
 
     async def send_brain(self) -> None:
         await self.send(
@@ -379,6 +380,7 @@ class Session:
             voice=engines.voice,
             allow_calendar=bool(load_settings().get("allow_calendar")),
             allow_mail=bool(load_settings().get("allow_mail")),
+            always_on=bool(load_settings().get("always_on")),
             voices=VOICES,
         )
 
@@ -391,8 +393,11 @@ class Session:
                     "I'd need an Anthropic API key for that. Add one in settings and I'll switch over."
                 )
             return
-        self.brain = brain
         save_settings(brain=brain)
+        for s in list(SESSIONS) + [self]:
+            s.brain = brain
+            if s is not self:
+                await s.send_brain()
         await self.send_brain()
         if announce:
             name = "Claude" if brain == "claude" else "Gemma, running locally"
@@ -432,7 +437,7 @@ class Session:
             score = await self.loop.run_in_executor(None, engines.wake_score, frame)
             loud = rms > max(self.noise_floor * 4, 1200)
             self.loud_frames = self.loud_frames + 1 if loud else 0
-            if score >= WAKE_THRESHOLD or (BARGE_IN == "voice" and self.loud_frames >= 5):
+            if score >= WAKE_THRESHOLD or (self.voice_barge_in and self.loud_frames >= 5):
                 log.info("Interrupted (wake %.2f, loud frames %d)", score, self.loud_frames)
                 await self.interrupt()
             return
@@ -608,6 +613,10 @@ class Session:
         elif kind == "set_allow" and msg.get("what") in ("calendar", "mail"):
             save_settings(**{f"allow_{msg['what']}": bool(msg.get("on"))})
             await self.send_brain()
+        elif kind == "set_always_on":
+            await set_always_on(bool(msg.get("on")))
+            for s in list(SESSIONS):
+                await s.send_brain()
         elif kind == "set_voice":
             voice = str(msg.get("voice"))
             if voice in VOICES:
@@ -649,6 +658,46 @@ EXIT_WHEN_IDLE = os.environ.get("JARVIS_EXIT_WHEN_IDLE") == "1"
 CLIENTS = 0
 
 
+LOCAL = None        # background.LocalAudio when Always on is enabled
+MENU_BAR = None     # the menu bar icon's process
+
+
+async def set_always_on(on: bool) -> None:
+    """Always on: "Hey Jarvis" works with no window, there's a menu bar icon, and Jarvis starts at login."""
+    global LOCAL, MENU_BAR
+    import background
+
+    save_settings(always_on=on)
+    try:
+        background.set_start_at_login(on)
+    except Exception as e:
+        log.warning("Couldn't change start at login: %s", e)
+    if on and LOCAL is None and sys.platform == "darwin":
+        await READY.wait()
+        try:
+            LOCAL = background.LocalAudio(Session, lambda: CLIENTS > 0)
+            SESSIONS.add(LOCAL.session)
+            await LOCAL.start()
+        except Exception:
+            log.exception("Couldn't start the Mac microphone for Always on")
+            LOCAL = None
+        if MENU_BAR is None or MENU_BAR.poll() is not None:
+            try:
+                MENU_BAR = background.start_menu_bar(ROOT)
+            except Exception:
+                log.exception("Couldn't start the menu bar icon")
+    elif not on:
+        if LOCAL is not None:
+            SESSIONS.discard(LOCAL.session)
+            LOCAL.stop()
+            LOCAL = None
+        if MENU_BAR is not None and MENU_BAR.poll() is None:
+            MENU_BAR.terminate()
+        MENU_BAR = None
+        if EXIT_WHEN_IDLE and CLIENTS == 0:
+            asyncio.create_task(exit_if_still_idle())
+
+
 async def load_everything() -> None:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, engines.load)
@@ -675,11 +724,13 @@ async def load_everything() -> None:
 async def startup() -> None:
     # Serve the page right away; models load in the background while the orb shows "waking up".
     asyncio.create_task(load_everything())
+    if load_settings().get("always_on"):
+        asyncio.create_task(set_always_on(True))
 
 
 async def exit_if_still_idle() -> None:
     await asyncio.sleep(20)
-    if CLIENTS == 0:
+    if CLIENTS == 0 and not load_settings().get("always_on"):
         log.info("Window closed; shutting down.")
         os._exit(0)
 
@@ -724,6 +775,40 @@ async def ws_endpoint(ws: WebSocket) -> None:
             session.task.cancel()
         if EXIT_WHEN_IDLE and CLIENTS == 0:
             asyncio.create_task(exit_if_still_idle())
+
+
+@app.get("/api/status")
+async def api_status() -> dict:
+    st = LOCAL.status if LOCAL else {}
+    return {"always_on": LOCAL is not None, "state": st.get("state", "idle"),
+            "brain": st.get("brain", load_settings().get("brain", "gemma"))}
+
+
+@app.post("/api/cmd")
+async def api_cmd(msg: dict) -> dict:
+    if LOCAL is None or not READY.is_set():
+        return {"ok": False}
+    if msg.get("type") in ("ptt", "set_brain"):
+        await LOCAL.session.on_json(msg)
+        if msg.get("type") == "set_brain":
+            for s in list(SESSIONS):
+                s.brain = LOCAL.session.brain
+                await s.send_brain()
+    return {"ok": True}
+
+
+@app.post("/api/always_on")
+async def api_always_on(msg: dict) -> dict:
+    await set_always_on(bool(msg.get("on")))
+    for s in list(SESSIONS):
+        await s.send_brain()
+    return {"ok": True}
+
+
+@app.post("/api/quit")
+async def api_quit() -> dict:
+    asyncio.get_running_loop().call_later(0.3, os._exit, 0)
+    return {"ok": True}
 
 
 @app.get("/")

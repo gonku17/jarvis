@@ -3,4 +3,4 @@
 JARVIS_DIR="${JARVIS_DIR:-$HOME/Documents/Jarvis}"
 export JARVIS_DIR PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 [ -f "$JARVIS_DIR/update.sh" ] && bash "$JARVIS_DIR/update.sh" >>"$JARVIS_DIR/update.log" 2>&1
-exec bash "$JARVIS_DIR/launch.sh"
+exec bash "$JARVIS_DIR/launch.sh" "$@"

@@ -58,3 +58,9 @@ Example: `JARVIS_LLM=gemma4:e2b JARVIS_USER_NAME=Gon ./start.sh`
 ## Changing the UI
 The orb UI source is in `web-src/` (React + Vite). `npm install && npm run build` rebuilds it into `web/`.
 The orb is the Orb component from elevenlabs/ui (MIT License, Copyright (c) 2025 Eleven Labs Inc.).
+
+## Always on
+
+In the orb's settings (the gear), turn on **Always on**. Jarvis then listens for "Hey Jarvis" even
+with the window closed, puts an icon in the menu bar (status, Talk now, brain switch, Open the orb,
+Quit), and starts by itself when you log in. Turn it off from the same switch or from the menu bar.

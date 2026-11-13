@@ -28,6 +28,7 @@ export default function App() {
   const [voices, setVoices] = useState<Record<string, string>>({})
   const [voiceNote, setVoiceNote] = useState("")
   const [allow, setAllow] = useState({ calendar: false, mail: false })
+  const [alwaysOn, setAlwaysOn] = useState(false)
 
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -107,6 +108,7 @@ export default function App() {
           if (m.voice) setVoice(m.voice)
           if (m.voices) setVoices(m.voices)
           setAllow({ calendar: !!m.allow_calendar, mail: !!m.allow_mail })
+          setAlwaysOn(!!m.always_on)
           setVoiceNote("")
           break
         case "voice_loading":
@@ -311,6 +313,15 @@ export default function App() {
               Let Jarvis read your {what === "calendar" ? "Calendar" : "Mail"} app
             </label>
           ))}
+          <div className="settings-title">Always on</div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={alwaysOn}
+              onChange={(e) => send({ type: "set_always_on", on: e.target.checked })}
+            />
+            Listen for “Hey Jarvis” even with this window closed, show a menu bar icon, and start at login
+          </label>
         </div>
       )}
 
