@@ -10,14 +10,22 @@ BRANCH="${JARVIS_BRANCH:-main}"
 AUTH=()
 [ -n "${GITHUB_TOKEN:-}" ] && AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN")
 echo "$(date) checking $REPO"
-SHA="$(curl -fsS -m 5 ${AUTH[@]+"${AUTH[@]}"} "https://api.github.com/repos/$REPO/commits/$BRANCH" | sed -n 's/^  "sha": "\([0-9a-f]*\)".*/\1/p' | head -1)"
-[ -n "$SHA" ] || { echo "no network or repo not found"; exit 0; }
-[ "$SHA" = "$(cat .version 2>/dev/null)" ] && { echo "up to date"; exit 0; }
-
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-curl -fsSL -m 60 ${AUTH[@]+"${AUTH[@]}"} "https://api.github.com/repos/$REPO/tarball/$SHA" -o "$TMP/j.tgz" || exit 0
-tar -xzf "$TMP/j.tgz" -C "$TMP" || exit 0
+# Latest commit from the GitHub API; if that's slow or rate-limited, fall back to the plain archive.
+SHA="$(curl -fsS -m 15 ${AUTH[@]+"${AUTH[@]}"} "https://api.github.com/repos/$REPO/commits/$BRANCH" 2>/dev/null | sed -n 's/^  "sha": "\([0-9a-f]*\)".*/\1/p' | head -1)"
+if [ -n "$SHA" ]; then
+  [ "$SHA" = "$(cat .version 2>/dev/null)" ] && { echo "up to date"; exit 0; }
+  URL="https://codeload.github.com/$REPO/tar.gz/$SHA"
+else
+  URL="https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH"
+fi
+curl -fsSL -m 120 ${AUTH[@]+"${AUTH[@]}"} "$URL" -o "$TMP/j.tgz" || { echo "download failed: $URL (check the internet connection)"; exit 0; }
+if [ -z "$SHA" ]; then
+  SHA="archive-$(shasum -a 256 "$TMP/j.tgz" | cut -c1-16)"
+  [ "$SHA" = "$(cat .version 2>/dev/null)" ] && { echo "up to date"; exit 0; }
+fi
+tar -xzf "$TMP/j.tgz" -C "$TMP" || { echo "couldn't unpack the download"; exit 0; }
 SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)"
 [ -f "$SRC/server.py" ] || { echo "unexpected archive"; exit 0; }
 
