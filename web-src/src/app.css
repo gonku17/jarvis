@@ -99,3 +99,5 @@ body {
 .mic-meter { height: 6px; border-radius: 4px; background: rgba(255,255,255,.08); margin-top: 8px; overflow: hidden; }
 .mic-meter > div { height: 100%; background: linear-gradient(90deg, #22C7FF, #FF3D9A); transition: width .12s; }
 .err-note { color: #ff9b9b; font-size: 12.5px; }
+.app { position: relative; }
+.settings { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); width: calc(100% - 32px); z-index: 10; max-height: calc(100vh - 90px); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
