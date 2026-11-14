@@ -36,6 +36,11 @@ LLM_MODEL = os.environ.get("JARVIS_LLM", "gemma4:e4b")
 # Small, quick model for everyday chat; the big one handles anything that needs real thought.
 FAST_MODEL = os.environ.get("JARVIS_FAST_LLM", "gemma3:1b")
 FAST_AVAILABLE = False  # set once Ollama confirms the small model is installed
+# Only chit-chat goes to the small model; it gets facts wrong (it said Sydney is Australia's capital).
+SMALLTALK_RE = re.compile(r"^(?:hi|hello|hey|yo|good (?:morning|afternoon|evening|night)|thanks?(?: you)?|cheers|"
+                          r"how are you|how's it going|what's up|tell me (?:a |another )?(?:[a-z-]+ ){0,3}(?:joke|fun fact)|joke|"
+                          r"who are you|what(?:'s| is) your name|i'm (?:bored|tired|back|home)|"
+                          r"you're (?:funny|great|awesome|the best)|good (?:job|work)|nice|cool|ok(?:ay)?)\b", re.I)
 HARD_RE = re.compile(r"\b(why|explain|how (?:does|do|would|can|could)|compare|difference|analy[sz]e|summari[sz]e|"
                      r"write|draft|plan|calculate|translate|code|step[s ]?by[ -]step|in detail|pros and cons)\b", re.I)
 
@@ -44,8 +49,8 @@ def pick_model(messages: list[dict]) -> str:
     """Quick small model for short everyday questions, Gemma for anything harder or with extra facts."""
     if not FAST_AVAILABLE or load_settings().get("fast_answers", True) is False:
         return LLM_MODEL
-    last = messages[-1]["content"] if messages else ""
-    if len(last) > 160 or HARD_RE.search(last) or "\n" in last:
+    last = (messages[-1]["content"] if messages else "").strip()
+    if len(last) > 120 or "\n" in last or HARD_RE.search(last) or not SMALLTALK_RE.match(last):
         return LLM_MODEL
     return FAST_MODEL
 WHISPER_MODEL = os.environ.get("JARVIS_WHISPER", "base.en")

@@ -347,18 +347,30 @@ async def headlines(n: int = 5) -> str:
 
 
 async def web_search(query: str, n: int = 5) -> list[dict]:
-    """DuckDuckGo's HTML results page: free, no key."""
-    async with httpx.AsyncClient(timeout=10, headers=UA, follow_redirects=True) as c:
+    """Free, no key: DuckDuckGo's HTML results plus a Wikipedia summary, so there are real facts to answer from."""
+    clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()  # noqa: E731
+    results: list[dict] = []
+
+    async def ddg(c: httpx.AsyncClient) -> None:
         r = await c.post("https://html.duckduckgo.com/html/", data={"q": query})
-    results = []
-    for block in re.findall(r'<div class="result results_links.*?</div>\s*</div>', r.text, re.S):
-        title = re.search(r'class="result__a"[^>]*>(.*?)</a>', block, re.S)
-        snippet = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', block, re.S)
-        if title:
-            clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
-            results.append({"title": clean(title.group(1)), "snippet": clean(snippet.group(1)) if snippet else ""})
-        if len(results) >= n:
-            break
+        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', r.text, re.S)
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</(?:a|div|td)>', r.text, re.S)
+        for i, t in enumerate(titles[:n]):
+            sn = clean(snippets[i]) if i < len(snippets) else ""
+            if sn:
+                results.append({"title": clean(t), "snippet": sn})
+
+    async def wiki(c: httpx.AsyncClient) -> None:
+        r = await c.get("https://en.wikipedia.org/w/rest.php/v1/search/page", params={"q": query, "limit": 2})
+        pages = r.json().get("pages", [])
+        for p in pages[:2]:
+            s = await c.get("https://en.wikipedia.org/api/rest_v1/page/summary/" + p["key"])
+            extract = s.json().get("extract", "") if s.status_code == 200 else ""
+            if extract:
+                results.append({"title": "Wikipedia: " + p["title"], "snippet": extract[:700]})
+
+    async with httpx.AsyncClient(timeout=10, headers=UA, follow_redirects=True) as c:
+        await asyncio.gather(*(job(c) for job in (ddg, wiki)), return_exceptions=True)
     return results
 
 
