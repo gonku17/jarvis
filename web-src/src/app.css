@@ -94,3 +94,8 @@ body {
 .hud.narrow .hud-panel { position: relative; transform: none; left: auto; top: auto; animation: none; }
 .stage:has(.hud.narrow) { flex-direction: column; align-items: center; }
 .voice-group { font-size: 11px; color: var(--muted); margin: 8px 0 4px; letter-spacing: .06em; text-transform: uppercase; }
+.mic-select { width: 100%; background: var(--panel); color: var(--fg); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13px; }
+.mic-select option { background: #0b1424; }
+.mic-meter { height: 6px; border-radius: 4px; background: rgba(255,255,255,.08); margin-top: 8px; overflow: hidden; }
+.mic-meter > div { height: 100%; background: linear-gradient(90deg, #22C7FF, #FF3D9A); transition: width .12s; }
+.err-note { color: #ff9b9b; font-size: 12.5px; }

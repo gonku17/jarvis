@@ -45,6 +45,14 @@ export default function App() {
   const ctxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const inputVol = useRef(0)
+  const micStream = useRef<MediaStream | null>(null)
+  const micSource = useRef<MediaStreamAudioSourceNode | null>(null)
+  const micNode = useRef<AudioWorkletNode | null>(null)
+  const audioCtx = useRef<AudioContext | null>(null)
+  const [mics, setMics] = useState<{ id: string; label: string }[]>([])
+  const [micId, setMicId] = useState<string>(() => { try { return localStorage.getItem("micId") || "" } catch { return "" } })
+  const [micErr, setMicErr] = useState("")
+  const [micLevel, setMicLevel] = useState(0)
   const orbRef = useRef<HTMLDivElement>(null)
   const [lastUserText, setLastUserText] = useState("")
   const [hudReset, setHudReset] = useState(0)
@@ -201,12 +209,11 @@ export default function App() {
     analyser.connect(ctx.destination)
     analyserRef.current = analyser
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    })
     await ctx.audioWorklet.addModule("./mic-worklet.js")
     const node = new AudioWorkletNode(ctx, "mic-frames")
-    ctx.createMediaStreamSource(stream).connect(node)
+    audioCtx.current = ctx
+    micNode.current = node
+    await openMic(micId)
     node.port.onmessage = (e) => {
       if (e.data instanceof ArrayBuffer) {
         if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data)
@@ -226,6 +233,50 @@ export default function App() {
     tick()
     connect()
   }
+
+  // Microphone: list the Mac's inputs and switch between them without restarting.
+  const listMics = async () => {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices()
+      setMics(all.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications")
+        .map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1}` })))
+    } catch { /* ignore */ }
+  }
+  const openMic = async (id: string) => {
+    const ctx = audioCtx.current, node = micNode.current
+    if (!ctx || !node) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+          ...(id && id !== "default" ? { deviceId: { exact: id } } : {}) },
+      })
+      micSource.current?.disconnect()
+      micStream.current?.getTracks().forEach((t) => t.stop())
+      micStream.current = stream
+      micSource.current = ctx.createMediaStreamSource(stream)
+      micSource.current.connect(node)
+      setMicErr("")
+      listMics()
+    } catch (e) {
+      const name = (e as DOMException)?.name
+      setMicErr(name === "NotAllowedError"
+        ? "Jarvis isn't allowed to use the microphone. In System Settings → Privacy & Security → Microphone, turn on Google Chrome, then reopen Jarvis."
+        : name === "NotFoundError" || name === "OverconstrainedError"
+          ? "That microphone isn't connected any more. Pick another one."
+          : `Couldn't open the microphone: ${name || e}`)
+      if (id) { setMicId(""); try { localStorage.removeItem("micId") } catch { /* ignore */ } }
+    }
+  }
+  const pickMic = (id: string) => {
+    setMicId(id)
+    try { localStorage.setItem("micId", id) } catch { /* ignore */ }
+    openMic(id)
+  }
+  useEffect(() => {
+    navigator.mediaDevices?.addEventListener?.("devicechange", listMics)
+    const t = setInterval(() => setMicLevel(inputVol.current), 150)
+    return () => { navigator.mediaDevices?.removeEventListener?.("devicechange", listMics); clearInterval(t) }
+  }, [])
 
   // Launched from Jarvis.app: start straight away, no button.
   useEffect(() => {
@@ -311,6 +362,14 @@ export default function App() {
             Quick answers: use a small, fast model for simple questions
             {!fast.available && <span className="muted"> (not installed yet)</span>}
           </label>
+          <div className="settings-title">Microphone</div>
+          <select className="mic-select" value={micId || "default"} onFocus={listMics}
+            onChange={(e) => pickMic(e.target.value)}>
+            {mics.length === 0 && <option value="default">Default microphone</option>}
+            {mics.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+          <div className="mic-meter" title="Speak to test"><div style={{ width: `${Math.round(micLevel * 100)}%` }} /></div>
+          {micErr ? <p className="err-note">{micErr}</p> : <p className="muted">Speak and the bar should move.</p>}
           <div className="settings-title">Voice</div>
           {(["Female", "Male"] as const).map((group) => (
             <div key={group}>
