@@ -836,7 +836,7 @@ end tell"""
         if not text.strip():
             return Result(reply="I can't make out any text on your screen right now.")
         return Result(context=("The user asked: " + raw + "\nHere is the text currently visible on their screen "
-                               "(from on-device text recognition, may be jumbled):\n" + text[:6000]))
+                               "(from on-device text recognition, may be jumbled):\n" + text[:2500]))
 
     # -- Shortcuts app
     async def shortcut_skill(self, t: str, raw: str) -> Result | None:

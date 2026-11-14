@@ -131,9 +131,14 @@ class LocalAudio:
 
         await self.session.send_brain()
         await self.session.set_state("idle")
-        self.stream = sd.InputStream(samplerate=16000, channels=1, dtype="int16",
-                                     blocksize=FRAME, callback=self._callback)
-        self.stream.start()
+        def open_mic():
+            # Opening the mic can block while macOS asks for permission, so do it off the event loop.
+            st = sd.InputStream(samplerate=16000, channels=1, dtype="int16",
+                                blocksize=FRAME, callback=self._callback)
+            st.start()
+            return st
+
+        self.stream = await self.loop.run_in_executor(None, open_mic)
         self.task = asyncio.create_task(self._pump())
         log.info("Always on: listening for 'Hey Jarvis' with no window")
 

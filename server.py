@@ -549,10 +549,13 @@ class Session:
             return
 
         system = system_prompt(self.brain) + " " + skills.system_notes()
-        if result and result.context:
-            system += "\n\n" + result.context
         self.history.append({"role": "user", "content": text})
         messages = [{"role": "system", "content": system}] + self.history[-HISTORY_TURNS * 2 :]
+        if result and result.context:
+            # Put fresh facts right next to the question (small local models ignore them in the system prompt).
+            messages[-1] = {"role": "user", "content": (
+                f"{result.context}\n\nUsing the information above, answer this directly and specifically "
+                f"(give the actual names, numbers or facts; don't say you'll check): {text}")}
 
         reply, pending = "", ""
         speaking = False
@@ -675,9 +678,7 @@ class Session:
             self.history = []
             await self.send(type="history", turns=[])
         elif kind == "set_always_on":
-            await set_always_on(bool(msg.get("on")))
-            for s in list(SESSIONS):
-                await s.send_brain()
+            asyncio.create_task(always_on_then_refresh(bool(msg.get("on"))))
         elif kind == "set_voice":
             voice = str(msg.get("voice"))
             if voice in VOICES:
@@ -724,6 +725,13 @@ LOCAL = None        # background.LocalAudio when Always on is enabled
 MENU_BAR = None     # the menu bar icon's process
 
 
+def notify_mac(text: str) -> None:
+    try:
+        subprocess.Popen(["osascript", "-e", f'display notification "{text}" with title "Jarvis"'])
+    except OSError:
+        pass
+
+
 async def set_always_on(on: bool) -> None:
     """Always on: "Hey Jarvis" works with no window, there's a menu bar icon, and Jarvis starts at login."""
     global LOCAL, MENU_BAR
@@ -739,10 +747,18 @@ async def set_always_on(on: bool) -> None:
         try:
             LOCAL = background.LocalAudio(Session, lambda: CLIENTS > 0)
             SESSIONS.add(LOCAL.session)
-            await LOCAL.start()
-        except Exception:
-            log.exception("Couldn't start the Mac microphone for Always on")
+            await asyncio.wait_for(LOCAL.start(), 30)
+        except Exception as e:
+            # e.g. macOS is showing "allow microphone?" and hasn't been answered
+            log.warning("Couldn't start the Mac microphone for Always on: %r", e)
+            if LOCAL is not None:
+                SESSIONS.discard(LOCAL.session)
+                try:
+                    LOCAL.stop()
+                except Exception:
+                    pass
             LOCAL = None
+            notify_mac("Jarvis couldn't use the microphone for Always on. Allow it in System Settings → Privacy & Security → Microphone, then reopen Jarvis.")
         if MENU_BAR is None or MENU_BAR.poll() is not None:
             try:
                 MENU_BAR = background.start_menu_bar(ROOT)
@@ -865,11 +881,20 @@ async def api_cmd(msg: dict) -> dict:
     return {"ok": True}
 
 
+async def always_on_then_refresh(on: bool) -> None:
+    try:
+        await set_always_on(on)
+    finally:
+        for s in list(SESSIONS):
+            try:
+                await s.send_brain()
+            except Exception:
+                pass
+
+
 @app.post("/api/always_on")
 async def api_always_on(msg: dict) -> dict:
-    await set_always_on(bool(msg.get("on")))
-    for s in list(SESSIONS):
-        await s.send_brain()
+    asyncio.create_task(always_on_then_refresh(bool(msg.get("on"))))
     return {"ok": True}
 
 
