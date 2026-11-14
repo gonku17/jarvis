@@ -30,6 +30,7 @@ export default function App() {
   const [voiceNote, setVoiceNote] = useState("")
   const [allow, setAllow] = useState({ calendar: false, mail: false })
   const [alwaysOn, setAlwaysOn] = useState(false)
+  const [fast, setFast] = useState({ available: false, on: true, model: "" })
   const [personality, setPersonality] = useState("butler")
   const [orbStyle, setOrbStyle] = useState<"glow" | "ribbons">(() => {
     try { return localStorage.getItem("orbStyle") === "ribbons" ? "ribbons" : "glow" } catch { return "glow" }
@@ -123,6 +124,7 @@ export default function App() {
           if (m.voices) setVoices(m.voices)
           setAllow({ calendar: !!m.allow_calendar, mail: !!m.allow_mail })
           setAlwaysOn(!!m.always_on)
+          setFast({ available: !!m.fast_available, on: m.fast_answers !== false, model: m.fast_model || "" })
           if (m.personality) setPersonality(m.personality)
           if (m.personalities) setPersonalities(m.personalities)
           setVoiceNote("")
@@ -303,6 +305,12 @@ export default function App() {
             )}
           </div>
           <p className="muted">Tip: you can also say “switch to Claude” or “switch to Gemma”.</p>
+          <label className="toggle">
+            <input type="checkbox" checked={fast.on && fast.available} disabled={!fast.available}
+              onChange={(e) => send({ type: "set_fast_answers", on: e.target.checked })} />
+            Quick answers: use a small, fast model for simple questions
+            {!fast.available && <span className="muted"> (not installed yet)</span>}
+          </label>
           <div className="settings-title">Voice</div>
           {(["Female", "Male"] as const).map((group) => (
             <div key={group}>

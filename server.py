@@ -33,6 +33,21 @@ MODELS = ROOT / "models"
 
 OLLAMA_URL = os.environ.get("JARVIS_OLLAMA_URL", "http://127.0.0.1:11434")
 LLM_MODEL = os.environ.get("JARVIS_LLM", "gemma4:e4b")
+# Small, quick model for everyday chat; the big one handles anything that needs real thought.
+FAST_MODEL = os.environ.get("JARVIS_FAST_LLM", "gemma3:1b")
+FAST_AVAILABLE = False  # set once Ollama confirms the small model is installed
+HARD_RE = re.compile(r"\b(why|explain|how (?:does|do|would|can|could)|compare|difference|analy[sz]e|summari[sz]e|"
+                     r"write|draft|plan|calculate|translate|code|step[s ]?by[ -]step|in detail|pros and cons)\b", re.I)
+
+
+def pick_model(messages: list[dict]) -> str:
+    """Quick small model for short everyday questions, Gemma for anything harder or with extra facts."""
+    if not FAST_AVAILABLE or load_settings().get("fast_answers", True) is False:
+        return LLM_MODEL
+    last = messages[-1]["content"] if messages else ""
+    if len(last) > 160 or HARD_RE.search(last) or "\n" in last:
+        return LLM_MODEL
+    return FAST_MODEL
 WHISPER_MODEL = os.environ.get("JARVIS_WHISPER", "base.en")
 PIPER_VOICE = os.environ.get("JARVIS_VOICE", "en_GB-alan-medium")
 WAKE_THRESHOLD = float(os.environ.get("JARVIS_WAKE_THRESHOLD", "0.5"))
@@ -242,8 +257,10 @@ def clean_for_speech(text: str) -> str:
 
 
 async def ollama_stream(messages: list[dict]):
+    model = pick_model(messages)
+    log.info("Thinking with %s", model)
     payload = {
-        "model": LLM_MODEL,
+        "model": model,
         "messages": messages,
         "stream": True,
         "think": False,
@@ -423,6 +440,8 @@ class Session:
             allow_calendar=bool(load_settings().get("allow_calendar")),
             allow_mail=bool(load_settings().get("allow_mail")),
             always_on=bool(load_settings().get("always_on")),
+            fast_available=FAST_AVAILABLE, fast_model=FAST_MODEL,
+            fast_answers=load_settings().get("fast_answers", True) is not False,
             personality=load_settings().get("personality", "butler"),
             personalities={k: v[0] for k, v in PERSONALITIES.items()},
             voices=VOICES,
@@ -677,6 +696,9 @@ class Session:
             skills.memory.save()
             self.history = []
             await self.send(type="history", turns=[])
+        elif kind == "set_fast_answers":
+            save_settings(fast_answers=bool(msg.get("on")))
+            await self.send_brain()
         elif kind == "set_always_on":
             asyncio.create_task(always_on_then_refresh(bool(msg.get("on"))))
         elif kind == "set_voice":
@@ -783,13 +805,18 @@ async def load_everything() -> None:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=3)) as c:
             tags = (await c.get(f"{OLLAMA_URL}/api/tags")).json()
             names = [m["name"] for m in tags.get("models", [])]
+            global FAST_AVAILABLE
+            FAST_AVAILABLE = any(n == FAST_MODEL or n == FAST_MODEL + ":latest" for n in names)
+            if not FAST_AVAILABLE:
+                log.info("Quick-answer model %s not installed (ollama pull %s); using %s for everything.",
+                         FAST_MODEL, FAST_MODEL, LLM_MODEL)
             if LLM_MODEL not in names:
                 log.warning("Model %s not found in Ollama. Run: ollama pull %s", LLM_MODEL, LLM_MODEL)
-            else:
-                log.info("Warming up %s…", LLM_MODEL)
+            for m in ([FAST_MODEL] if FAST_AVAILABLE else []) + ([LLM_MODEL] if LLM_MODEL in names else []):
+                log.info("Warming up %s…", m)
                 await c.post(
                     f"{OLLAMA_URL}/api/generate",
-                    json={"model": LLM_MODEL, "prompt": "hi", "think": False, "stream": False,
+                    json={"model": m, "prompt": "hi", "think": False, "stream": False,
                           "keep_alive": "2h", "options": {"num_predict": 1, "num_ctx": LLM_CTX}},
                 )
     except Exception:

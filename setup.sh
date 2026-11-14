@@ -15,6 +15,7 @@ if ! curl -s http://127.0.0.1:11434/api/tags >/dev/null; then
 fi
 echo "==> Downloading the language model ($MODEL). This is several GB and only happens once."
 ollama pull "$MODEL"
+ollama pull gemma3:1b   # small model for quick everyday answers
 
 echo "==> Setting up Python (in ./.venv, nothing system-wide)"
 if ! command -v uv >/dev/null 2>&1; then
