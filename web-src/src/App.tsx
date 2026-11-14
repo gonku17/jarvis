@@ -27,6 +27,7 @@ export default function App() {
   const [keyNote, setKeyNote] = useState("")
   const [voice, setVoice] = useState("piper")
   const [voices, setVoices] = useState<Record<string, string>>({})
+  const [voiceGender, setVoiceGender] = useState<Record<string, string>>({})
   const [voiceNote, setVoiceNote] = useState("")
   const [allow, setAllow] = useState({ calendar: false, mail: false })
   const [alwaysOn, setAlwaysOn] = useState(false)
@@ -130,6 +131,7 @@ export default function App() {
           setModels({ local: m.local_model, claude: m.claude_model })
           if (m.voice) setVoice(m.voice)
           if (m.voices) setVoices(m.voices)
+          if (m.voice_gender) setVoiceGender(m.voice_gender)
           setAllow({ calendar: !!m.allow_calendar, mail: !!m.allow_mail })
           setAlwaysOn(!!m.always_on)
           setFast({ available: !!m.fast_available, on: m.fast_answers !== false, model: m.fast_model || "" })
@@ -371,12 +373,13 @@ export default function App() {
           <div className="mic-meter" title="Speak to test"><div style={{ width: `${Math.round(micLevel * 100)}%` }} /></div>
           {micErr ? <p className="err-note">{micErr}</p> : <p className="muted">Speak and the bar should move.</p>}
           <div className="settings-title">Voice</div>
+          <p className="muted">⚡ = fast on this Mac. The others sound more natural but take longer to speak.</p>
           {(["Female", "Male"] as const).map((group) => (
             <div key={group}>
               <div className="voice-group">{group}</div>
               <div className="voices">
                 {Object.entries(voices)
-                  .filter(([id]) => (id === "piper" ? "m" : id[1]) === (group === "Female" ? "f" : "m"))
+                  .filter(([id]) => (voiceGender[id] || id[1]) === (group === "Female" ? "f" : "m"))
                   .map(([id, label]) => (
                     <button key={id} className={id === voice ? "chip on" : "chip"}
                       title={label}

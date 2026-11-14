@@ -103,6 +103,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class Engines:
     def __init__(self) -> None:
+        self.pipers: dict = {}
         self.wake = None
         self.stt = None
         self.piper = None
@@ -126,7 +127,12 @@ class Engines:
         self.kokoro = Kokoro(str(folder / "kokoro-v1.0.int8.onnx"), str(folder / "voices-v1.0.bin"))
 
     def set_voice(self, voice: str) -> None:
-        if voice != "piper" and self.kokoro is None:
+        if voice.startswith("piper:"):
+            name = voice.split(":", 1)[1]
+            if name not in self.pipers:
+                from piper import PiperVoice
+                self.pipers[name] = PiperVoice.load(str(download_piper_voice(name)))
+        elif voice != "piper" and self.kokoro is None:
             self.load_kokoro()
         self.voice = voice
 
@@ -160,7 +166,7 @@ class Engines:
             log.warning("Piper unavailable (%s); falling back to macOS 'say'.", e)
             self.piper = None
         voice = load_settings().get("voice", "piper")
-        if voice != "piper":
+        if voice != "piper" and voice in VOICES:
             try:
                 self.set_voice(voice)
             except Exception as e:
@@ -185,7 +191,13 @@ class Engines:
 
     # -- text to speech, returns WAV bytes
     def speak(self, text: str) -> bytes:
-        if self.voice != "piper" and self.kokoro is not None:
+        extra = self.pipers.get(self.voice.split(":", 1)[1]) if self.voice.startswith("piper:") else None
+        if extra is not None:
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wav:
+                extra.synthesize_wav(text, wav)
+            return buf.getvalue()
+        if not self.voice.startswith("piper") and self.kokoro is not None:
             samples, sr = self.kokoro.create(text, voice=self.voice, speed=1.0,
                                                 lang="en-us" if self.voice.startswith("a") else "en-gb")
             buf = io.BytesIO()
@@ -361,9 +373,16 @@ async def claude_stream(messages: list[dict]):
             yield "I'm afraid I can't help with that one."
 
 
-# Voice id -> label. Kokoro ids: first letter b = British, a = American; second f = female, m = male.
+# Voice id -> label. "piper…" voices are fast on any Mac; Kokoro ones sound more natural but are slow on Intel.
+# Kokoro ids: first letter b = British, a = American; second f = female, m = male.
 VOICES = {
-    "piper": "Alan · British (fastest)",
+    "piper": "Alan · British ⚡",
+    "piper:en_GB-northern_english_male-medium": "Northern · British ⚡",
+    "piper:en_US-ryan-medium": "Ryan · American ⚡",
+    "piper:en_GB-jenny_dioco-medium": "Jenny · British ⚡",
+    "piper:en_GB-alba-medium": "Alba · Scottish ⚡",
+    "piper:en_US-amy-medium": "Amy · American ⚡",
+    "piper:en_US-lessac-medium": "Lessac · American ⚡",
     "bm_george": "George · British", "bm_daniel": "Daniel · British",
     "bm_fable": "Fable · British", "bm_lewis": "Lewis · British",
     "am_michael": "Michael · American", "am_adam": "Adam · American",
@@ -373,6 +392,11 @@ VOICES = {
     "af_heart": "Heart · American", "af_bella": "Bella · American",
     "af_nicole": "Nicole · American", "af_sarah": "Sarah · American",
 }
+
+VOICE_GENDER = {"piper": "m", "piper:en_GB-northern_english_male-medium": "m", "piper:en_US-ryan-medium": "m",
+                "piper:en_GB-jenny_dioco-medium": "f", "piper:en_GB-alba-medium": "f",
+                "piper:en_US-amy-medium": "f", "piper:en_US-lessac-medium": "f"}
+VOICE_GENDER.update({k: k[1] for k in VOICES if not k.startswith("piper")})
 
 SWITCH_RE = re.compile(
     r"\b(switch|change|swap|go|use|talk)\b.{0,25}?\b(claude|cloud|gemma|gemini|local|offline)\b", re.I
@@ -450,7 +474,7 @@ class Session:
             fast_answers=load_settings().get("fast_answers", True) is not False,
             personality=load_settings().get("personality", "butler"),
             personalities={k: v[0] for k, v in PERSONALITIES.items()},
-            voices=VOICES,
+            voices=VOICES, voice_gender=VOICE_GENDER,
         )
 
     async def switch_brain(self, brain: str, announce: bool) -> None:
@@ -721,9 +745,13 @@ class Session:
                     await self.loop.run_in_executor(None, engines.set_voice, voice)
                     save_settings(voice=voice)
                 except Exception as e:
+                    log.warning("voice %s failed: %s", voice, e)
                     await self.send(type="error", message=f"Couldn't load that voice: {e}")
+                    await self.send_brain()
+                    await self.speak_only("Sorry, I couldn't download that voice. Check the internet connection and try again.")
+                    return
                 await self.send_brain()
-                name = VOICES[voice].split(" ·")[0]
+                name = VOICES[voice].split(" ·")[0].replace("Northern", "your northern voice")
                 await self.speak_only(f"Hello, I'm {name}. This is how I'll sound from now on.")
         elif kind == "set_brain":
             await self.switch_brain(str(msg.get("brain")), announce=False)
