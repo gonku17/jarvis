@@ -243,6 +243,7 @@ async def announce(text: str) -> None:
 from skills import Skills  # noqa: E402
 
 skills = Skills(ROOT, announce, allowed=lambda name: bool(load_settings().get(f"allow_{name}")))
+skills.settings = lambda: load_settings()
 
 
 # ---------------------------------------------------------------- helpers
@@ -558,6 +559,7 @@ class Session:
 
         result = await skills.handle(text)
         if result and result.reply is not None:
+            self.no_follow_up = not result.follow_up
             if result.reply:
                 await self.speak_only(result.reply)
             else:  # silent actions (mute, pause music)
@@ -667,7 +669,12 @@ class Session:
 
     async def on_json(self, msg: dict) -> None:
         kind = msg.get("type")
-        if kind == "playback_done":
+        if kind == "playback_done" and getattr(self, "no_follow_up", False):
+            # e.g. after "Alexa, lights off": don't treat the speaker's reply as a question for Jarvis
+            self.no_follow_up = False
+            engines.wake_reset()
+            await self.set_state("idle")
+        elif kind == "playback_done":
             # Jarvis finished speaking: allow a quick follow-up without the wake word.
             engines.wake_reset()
             self.start_listening(follow_up=True)

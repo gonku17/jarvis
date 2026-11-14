@@ -28,6 +28,7 @@ log = logging.getLogger("jarvis.skills")
 class Result:
     reply: str | None = None  # speak this directly, no LLM
     context: str | None = None  # give this to the LLM as extra information
+    follow_up: bool = True  # listen for a follow-up after speaking
 
 
 # ---------------------------------------------------------------- memory
@@ -479,6 +480,7 @@ class Skills:
         self.allowed = allowed  # allowed("calendar") / allowed("mail"), set in settings
         self.announce = announce  # speak something unprompted (timers)
         self.timers: list[asyncio.Task] = []
+        self.settings: Callable[[], dict] = lambda: {}
 
     # -- live info for the floating panels around the orb
     async def hud(self) -> dict:
@@ -568,7 +570,7 @@ class Skills:
 
     async def handle(self, text: str) -> Result | None:
         t = text.lower().strip().rstrip(".!?")
-        for fn in (self.memory_skill, self.briefing_skill, self.screen_skill, self.file_skill,
+        for fn in (self.memory_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
                    self.timer_skill, self.reminder_skill, self.app_skill,
                    self.volume_skill, self.music_skill, self.play_skill, self.shortcut_skill, self.time_skill,
                    self.calendar_skill, self.mail_skill,
@@ -609,7 +611,7 @@ class Skills:
     async def timer_skill(self, t: str, raw: str) -> Result | None:
         if not re.search(r"\b(timer|countdown)\b", t):
             return None
-        if re.search(r"\b(cancel|stop|clear)\b", t):
+        if re.search(r"\b(cancel|stop|clear|turn off|switch off|kill)\b", t):
             n = sum(1 for task in self.timers if not task.done() and task.cancel())
             return Result(reply="Timer cancelled." if n else "There's no timer running.")
         secs = parse_duration(t)
@@ -761,6 +763,30 @@ end tell"""
         # Spotify: open its search for it (playing a search result needs a Spotify account link).
         subprocess.Popen(["open", "spotify:search:" + what.replace(" ", "%20")])
         return Result(reply=f"Here's {what} on Spotify. Pick one and I'll leave you to it.")
+
+    # -- smart home: Jarvis asks your Alexa or Google speaker out loud (no accounts, works with any device they control)
+    HOME_RE = re.compile(
+        r"^(?:please |can you |could you )?(?:"
+        r"(?:turn|switch|put) (?:on|off) .+|(?:turn|switch) .+ (?:on|off)|"
+        r"(?:dim|brighten) .+|set (?:the )?(?:lights?|lamp|bulbs?|heating|thermostat|temperature|fan|ac|air ?con\w*) .+|"
+        r"(?:make|turn) (?:it|the room|the house|the heating) (?:warmer|cooler|hotter|colder)|"
+        r"(?:open|close) (?:the )?(?:blinds|curtains|shades)|lights? (?:on|off)|"
+        r"(?:start|stop) (?:the )?(?:fan|hoover|vacuum|robot vacuum|heater))$")
+    HOME_WORDS = re.compile(r"\b(lights?|lamps?|bulbs?|plugs?|sockets?|fan|heating|heater|thermostat|temperature|"
+                            r"tv|television|blinds|curtains|shades|hoover|vacuum|ac|air ?con\w*|kettle|speaker|everything|room|kitchen|bedroom|living room|lounge|office|hallway|garden)\b")
+
+    async def home_skill(self, t: str, raw: str) -> Result | None:
+        mode = (self.settings() or {}).get("smart_home", "alexa")
+        if mode == "off" or not self.HOME_RE.match(t) or not self.HOME_WORDS.search(t):
+            return None
+        if re.search(r"\b(locks?|door|garage|alarm)\b", t):
+            return Result(reply="For safety, I won't control locks, doors or alarms. Please use your phone for those.")
+        command = re.sub(r"^(?:please |can you |could you )", "", raw.strip().rstrip(".!?"), flags=re.I)
+        google_words = (self.settings() or {}).get("google_words", "heating, thermostat, temperature")
+        use_google = mode == "google" or any(w.strip() and w.strip() in t for w in google_words.split(","))
+        wake = "Hey Google" if use_google else "Alexa"
+        # Say it slowly and clearly, with a pause after the wake word, so the speaker catches it.
+        return Result(reply=f"{wake}... {command}.", follow_up=False)
 
     # -- morning briefing
     async def briefing_skill(self, t: str, raw: str) -> Result | None:
