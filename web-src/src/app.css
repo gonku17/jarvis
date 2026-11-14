@@ -93,3 +93,4 @@ body {
 .hud.narrow { position: static; order: 2; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; pointer-events: auto; margin-top: 8px; }
 .hud.narrow .hud-panel { position: relative; transform: none; left: auto; top: auto; animation: none; }
 .stage:has(.hud.narrow) { flex-direction: column; align-items: center; }
+.voice-group { font-size: 11px; color: var(--muted); margin: 8px 0 4px; letter-spacing: .06em; text-transform: uppercase; }

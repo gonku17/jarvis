@@ -304,20 +304,22 @@ export default function App() {
           </div>
           <p className="muted">Tip: you can also say “switch to Claude” or “switch to Gemma”.</p>
           <div className="settings-title">Voice</div>
-          <div className="voices">
-            {Object.entries(voices).map(([id, label]) => (
-              <button
-                key={id}
-                className={id === voice ? "chip on" : "chip"}
-                onClick={() => {
-                  setVoice(id)
-                  send({ type: "set_voice", voice: id })
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {(["Female", "Male"] as const).map((group) => (
+            <div key={group}>
+              <div className="voice-group">{group}</div>
+              <div className="voices">
+                {Object.entries(voices)
+                  .filter(([id]) => (id === "piper" ? "m" : id[1]) === (group === "Female" ? "f" : "m"))
+                  .map(([id, label]) => (
+                    <button key={id} className={id === voice ? "chip on" : "chip"}
+                      title={label}
+                      onClick={() => { setVoice(id); send({ type: "set_voice", voice: id }) }}>
+                      {label.split(" (")[0]}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          ))}
           {voiceNote && <p className="muted">{voiceNote}</p>}
           <div className="settings-title">Access</div>
           {(["calendar", "mail"] as const).map((what) => (

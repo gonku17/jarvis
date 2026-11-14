@@ -49,6 +49,8 @@ END_SILENCE_SECONDS = 0.8
 HISTORY_TURNS = 6
 # Interrupting Jarvis while it talks: "wake" = only "Hey Jarvis", "voice" = also sustained loud speech.
 BARGE_IN = os.environ.get("JARVIS_BARGE_IN", "voice")
+# Must match between warm-up and chat, or Ollama reloads the model on the first question.
+LLM_CTX = int(os.environ.get("JARVIS_LLM_CTX", "2048"))
 
 PERSONALITIES = {
     "butler": ("Classic butler", "You are J.A.R.V.I.S., a calm, witty and very capable personal assistant with dry British humour."),
@@ -164,7 +166,8 @@ class Engines:
     # -- text to speech, returns WAV bytes
     def speak(self, text: str) -> bytes:
         if self.voice != "piper" and self.kokoro is not None:
-            samples, sr = self.kokoro.create(text, voice=self.voice, speed=1.0, lang="en-gb")
+            samples, sr = self.kokoro.create(text, voice=self.voice, speed=1.0,
+                                                lang="en-us" if self.voice.startswith("a") else "en-gb")
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav:
                 wav.setnchannels(1)
@@ -244,8 +247,8 @@ async def ollama_stream(messages: list[dict]):
         "messages": messages,
         "stream": True,
         "think": False,
-        "keep_alive": "30m",
-        "options": {"temperature": 0.6, "num_ctx": 4096},
+        "keep_alive": "2h",
+        "options": {"temperature": 0.6, "num_ctx": LLM_CTX},
     }
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=5)) as client:
         async with client.stream("POST", f"{OLLAMA_URL}/api/chat", json=payload) as r:
@@ -335,12 +338,17 @@ async def claude_stream(messages: list[dict]):
             yield "I'm afraid I can't help with that one."
 
 
+# Voice id -> label. Kokoro ids: first letter b = British, a = American; second f = female, m = male.
 VOICES = {
-    "piper": "Alan (fastest)",
-    "bm_george": "George (butler)",
-    "bm_daniel": "Daniel",
-    "bm_fable": "Fable",
-    "bm_lewis": "Lewis",
+    "piper": "Alan · British (fastest)",
+    "bm_george": "George · British", "bm_daniel": "Daniel · British",
+    "bm_fable": "Fable · British", "bm_lewis": "Lewis · British",
+    "am_michael": "Michael · American", "am_adam": "Adam · American",
+    "am_fenrir": "Fenrir · American", "am_onyx": "Onyx · American",
+    "bf_emma": "Emma · British", "bf_isabella": "Isabella · British",
+    "bf_alice": "Alice · British", "bf_lily": "Lily · British",
+    "af_heart": "Heart · American", "af_bella": "Bella · American",
+    "af_nicole": "Nicole · American", "af_sarah": "Sarah · American",
 }
 
 SWITCH_RE = re.compile(
@@ -680,7 +688,8 @@ class Session:
                 except Exception as e:
                     await self.send(type="error", message=f"Couldn't load that voice: {e}")
                 await self.send_brain()
-                await self.speak_only("This is how I sound now, sir.")
+                name = VOICES[voice].split(" ·")[0]
+                await self.speak_only(f"Hello, I'm {name}. This is how I'll sound from now on.")
         elif kind == "set_brain":
             await self.switch_brain(str(msg.get("brain")), announce=False)
         elif kind == "set_key":
@@ -765,7 +774,7 @@ async def load_everything() -> None:
                 await c.post(
                     f"{OLLAMA_URL}/api/generate",
                     json={"model": LLM_MODEL, "prompt": "hi", "think": False, "stream": False,
-                          "keep_alive": "30m", "options": {"num_predict": 1}},
+                          "keep_alive": "2h", "options": {"num_predict": 1, "num_ctx": LLM_CTX}},
                 )
     except Exception:
         log.warning("Ollama is not reachable at %s. Start the Ollama app.", OLLAMA_URL)
