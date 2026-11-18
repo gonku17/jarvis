@@ -40,6 +40,10 @@ class UIDelegate(NSObject):
             self, webview, origin, frame, kind, handler):
         handler(1 if origin.host() in LOCAL_HOSTS else 0)  # 1 = grant, 0 = prompt
 
+    def webViewDidClose_(self, webview):
+        note(f"the page asked to close the window: {describe_event()}")
+        webview.window().orderOut_(None)
+
     # <a target=_blank> and window.open: open in the normal browser instead of nowhere.
     def webView_createWebViewWithConfiguration_forNavigationAction_windowFeatures_(
             self, webview, config, action, features):
@@ -56,9 +60,28 @@ class NavDelegate(NSObject):
         webview.reload()
 
 
+def describe_event() -> str:
+    ev = NSApp.currentEvent()
+    if ev is None:
+        return "no user event (closed by code)"
+    try:
+        chars = ev.charactersIgnoringModifiers() if ev.type() in (10, 11) else ""
+    except Exception:
+        chars = ""
+    return f"event type {ev.type()} {chars!r} modifiers {ev.modifierFlags():#x}"
+
+
 class WinDelegate(NSObject):
+    def windowShouldClose_(self, window):
+        # Like other Mac apps: the red button / Cmd+W hides the window, Jarvis keeps running,
+        # the Dock icon brings it back, and Cmd+Q quits.
+        note(f"close requested: {describe_event()}")
+        window.orderOut_(None)
+        return False
+
     def windowWillClose_(self, notification):
-        note("window closed")
+        import traceback
+        note("window closed:\n" + "".join(traceback.format_stack(limit=12)))
 
     def windowDidMiniaturize_(self, notification):
         note("window minimised")
@@ -66,10 +89,14 @@ class WinDelegate(NSObject):
 
 class AppDelegate(NSObject):
     def applicationShouldTerminateAfterLastWindowClosed_(self, app):
+        return False
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, app, visible):
+        self.win.makeKeyAndOrderFront_(None)  # Dock icon clicked: show the orb again
         return True
 
     def applicationWillTerminate_(self, notification):
-        note("Jarvis window app quitting")
+        note(f"Jarvis window app quitting: {describe_event()}")
 
     def applicationDidFinishLaunching_(self, note):
         frame = NSMakeRect(0, 0, 980, 860)
