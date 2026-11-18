@@ -28,6 +28,11 @@ fi
 [ "${1:-}" = "--background" ] && exit 0
 
 # 3. The orb window: Jarvis's own native window. `exec` keeps this the Jarvis.app process.
+# Already open (maybe hidden with the red button)? Ask that copy to show itself.
+if pgrep -f "python window.py" >/dev/null 2>&1; then
+  touch "$JARVIS_DIR/.show_window"
+  exit 0
+fi
 if "$JARVIS_DIR/.venv/bin/python" -c "import WebKit, AppKit" 2>/dev/null; then
   cd "$JARVIS_DIR" && exec .venv/bin/python window.py "$URL" >>"$JARVIS_DIR/window.log" 2>&1
 fi

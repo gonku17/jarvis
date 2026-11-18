@@ -8,3 +8,5 @@ settings.json
 repo.txt
 __pycache__/
 web-src/node_modules/
+.show_window
+window.log

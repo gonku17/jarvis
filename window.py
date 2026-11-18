@@ -20,7 +20,7 @@ from AppKit import (
     NSWindowStyleMaskClosable, NSWindowStyleMaskFullSizeContentView, NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable, NSWindowStyleMaskTitled, NSWindowTitleHidden,
 )
-from Foundation import NSURL, NSProcessInfo, NSURLRequest
+from Foundation import NSURL, NSProcessInfo, NSTimer, NSURLRequest
 from WebKit import WKWebView, WKWebViewConfiguration
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765/?app=1"
@@ -141,6 +141,19 @@ class AppDelegate(NSObject):
         win.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
         self.win, self.web = win, web
+        # Opening Jarvis.app again (Dock, menu bar) drops a note instead of starting a second copy.
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(0.5, self, "checkShow:", None, True)
+
+    def checkShow_(self, timer):
+        flag = HERE / ".show_window"
+        if flag.exists():
+            try:
+                flag.unlink()
+            except OSError:
+                pass
+            note("shown again")
+            self.win.makeKeyAndOrderFront_(None)
+            NSApp.activateIgnoringOtherApps_(True)
 
     def reload_(self, sender):
         self.web.reload()
