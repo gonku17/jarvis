@@ -499,6 +499,26 @@ class Session:
             name = "Claude" if brain == "claude" else "Gemma, running locally"
             await self.speak_only(f"Switching my brain to {name}.")
 
+    async def use_server_mic(self, device: str | None) -> None:
+        """The window can't reach the mic itself (native window): listen through the Mac directly."""
+        import background
+
+        old = getattr(self, "server_mic", None)
+        if old:
+            old.stop()
+        if device:
+            save_settings(server_mic_device=device)
+        mic = background.ServerMic(self, device or load_settings().get("server_mic_device"))
+        try:
+            name = await mic.start()
+        except Exception as e:
+            log.warning("server mic failed: %s", e)
+            await self.send(type="server_mic", ok=False, error=str(e))
+            return
+        self.server_mic = mic
+        self.voice_barge_in = False  # no echo cancellation here: only "Hey Jarvis" interrupts
+        await self.send(type="server_mic", ok=True, device=name)
+
     async def speak_only(self, text: str) -> None:
         self.interrupted = False
         await self.send(type="assistant_start")
@@ -713,6 +733,8 @@ class Session:
             await self.set_state("listening")
         elif kind == "window_ready":
             asyncio.create_task(greet(self))
+        elif kind == "server_mic":
+            asyncio.create_task(self.use_server_mic(msg.get("device") or None))
         elif kind == "ptt" and self.state == "talking":
             await self.interrupt()
         elif kind == "ptt" and self.state == "idle":
@@ -1001,6 +1023,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
         CLIENTS -= 1
         SESSIONS.discard(session)
         ready_task.cancel()
+        if getattr(session, "server_mic", None):
+            session.server_mic.stop()
         if session.task:
             session.task.cancel()
         if EXIT_WHEN_IDLE and CLIENTS == 0:
@@ -1012,6 +1036,15 @@ async def api_status() -> dict:
     st = LOCAL.status if LOCAL else {}
     return {"always_on": LOCAL is not None, "state": st.get("state", "idle"),
             "brain": st.get("brain", load_settings().get("brain", "gemma"))}
+
+
+@app.get("/api/mics")
+async def api_mics() -> dict:
+    import background
+    try:
+        return {"devices": await asyncio.get_running_loop().run_in_executor(None, background.input_devices)}
+    except Exception as e:
+        return {"devices": [], "error": str(e)}
 
 
 @app.post("/api/clientlog")

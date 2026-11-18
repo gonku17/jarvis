@@ -56,6 +56,8 @@ export default function App() {
   const [micId, setMicId] = useState<string>(() => { try { return localStorage.getItem("micId") || "" } catch { return "" } })
   const [micErr, setMicErr] = useState("")
   const [micLevel, setMicLevel] = useState(0)
+  const serverMic = useRef(false)  // native window: the server listens through the Mac's mic
+  const [serverMicName, setServerMicName] = useState("")
   const orbRef = useRef<HTMLDivElement>(null)
   const [lastUserText, setLastUserText] = useState("")
   const [hudReset, setHudReset] = useState(0)
@@ -117,6 +119,7 @@ export default function App() {
     ws.onopen = () => {
       setConnected(true)
       ws.send(JSON.stringify({ type: "window_ready" }))
+      if (serverMic.current) ws.send(JSON.stringify({ type: "server_mic", device: (() => { try { return localStorage.getItem("serverMic") || "" } catch { return "" } })() }))
     }
     ws.onclose = () => {
       setConnected(false)
@@ -146,6 +149,13 @@ export default function App() {
           break
         case "systems":
           setBoot((b) => b ?? m.checks)  // once per window
+          break
+        case "mic_level":
+          inputVol.current = m.level
+          break
+        case "server_mic":
+          if (m.ok) { setServerMicName(m.device); setMicErr("") }
+          else setMicErr(`Couldn't open the microphone: ${m.error}`)
           break
         case "voice_loading":
           setVoiceNote("Loading voice… (the first time downloads about 120 MB)")
@@ -246,6 +256,13 @@ export default function App() {
 
   // Microphone: list the Mac's inputs and switch between them without restarting.
   const listMics = async () => {
+    if (serverMic.current) {
+      try {
+        const r = await (await fetch("/api/mics")).json()
+        setMics((r.devices || []).map((n: string) => ({ id: n, label: n })))
+      } catch { /* ignore */ }
+      return
+    }
     try {
       const all = await navigator.mediaDevices.enumerateDevices()
       setMics(all.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications")
@@ -255,6 +272,13 @@ export default function App() {
   const openMic = async (id: string) => {
     const ctx = audioCtx.current, node = micNode.current
     if (!ctx || !node) return
+    if (!navigator.mediaDevices?.getUserMedia || serverMic.current) {
+      // The native window can't open the mic itself: Jarvis listens through the Mac directly.
+      serverMic.current = true
+      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify({ type: "server_mic", device: id }))
+      listMics()
+      return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true,
@@ -280,7 +304,7 @@ export default function App() {
   }
   const pickMic = (id: string) => {
     setMicId(id)
-    try { localStorage.setItem("micId", id) } catch { /* ignore */ }
+    try { localStorage.setItem(serverMic.current ? "serverMic" : "micId", id) } catch { /* ignore */ }
     openMic(id)
   }
   useEffect(() => {
@@ -374,7 +398,7 @@ export default function App() {
             {!fast.available && <span className="muted"> (not installed yet)</span>}
           </label>
           <div className="settings-title">Microphone</div>
-          <select className="mic-select" value={micId || "default"} onFocus={listMics}
+          <select className="mic-select" value={(serverMic.current ? serverMicName : micId) || "default"} onFocus={listMics}
             onChange={(e) => pickMic(e.target.value)}>
             {mics.length === 0 && <option value="default">Default microphone</option>}
             {mics.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}

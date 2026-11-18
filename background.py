@@ -171,6 +171,102 @@ class LocalAudio:
             self.session.task.cancel()
 
 
+# ---------------------------------------------------------------- the Mac's mic for the orb window
+
+def input_devices() -> list[str]:
+    import sounddevice as sd
+    return [d["name"] for d in sd.query_devices() if d["max_input_channels"] > 0]
+
+
+def pick_input(name: str | None) -> int | None:
+    """The device index for `name`, else the default input, unless that is a poor Bluetooth one
+    (8 kHz headsets and speakers make Whisper struggle): then the Mac's own microphone."""
+    import sounddevice as sd
+    devs = list(sd.query_devices())
+    ins = [(i, d) for i, d in enumerate(devs) if d["max_input_channels"] > 0]
+    if name:
+        for i, d in ins:
+            if d["name"] == name:
+                return i
+    try:
+        default = sd.default.device[0]
+        d = devs[default] if default is not None and default >= 0 else None
+    except Exception:
+        d = None
+    if d is None or d["default_samplerate"] < 16000:
+        for i, dev in ins:
+            if any(w in dev["name"] for w in ("MacBook", "Built-in", "Internal")):
+                return i
+    return None  # PortAudio's default
+
+
+class ServerMic:
+    """Feeds the Mac's microphone straight into one window's Session. Used when the native window's
+    web view can't open the mic itself; the window still shows the orb and plays Jarvis's voice."""
+
+    def __init__(self, session, device: str | None) -> None:
+        self.session = session
+        self.device = device
+        self.loop = asyncio.get_running_loop()
+        self.frames: asyncio.Queue = asyncio.Queue(maxsize=50)
+        self.stream = None
+        self.task: asyncio.Task | None = None
+        self.name = ""
+
+    def _callback(self, indata, n, t, status) -> None:
+        frame = indata[:, 0].copy()
+
+        def put() -> None:
+            if not self.frames.full():
+                self.frames.put_nowait(frame)
+
+        self.loop.call_soon_threadsafe(put)
+
+    async def start(self) -> str:
+        import sounddevice as sd
+
+        idx = pick_input(self.device)
+        self.name = sd.query_devices(idx if idx is not None else sd.default.device[0])["name"]
+
+        def open_mic():
+            st = sd.InputStream(device=idx, samplerate=16000, channels=1, dtype="int16",
+                                blocksize=FRAME, callback=self._callback)
+            st.start()
+            return st
+
+        self.stream = await asyncio.wait_for(self.loop.run_in_executor(None, open_mic), 60)
+        self.task = asyncio.create_task(self._pump())
+        log.info("Window is using the Mac's microphone directly: %s", self.name)
+        return self.name
+
+    async def _pump(self) -> None:
+        n = 0
+        while True:
+            frame = await self.frames.get()
+            n += 1
+            if n % 3 == 0:
+                rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2))) / 32768
+                try:
+                    await self.session.send(type="mic_level", level=round(min(1.0, rms * 10), 3))
+                except Exception:
+                    return
+            try:
+                await self.session.on_frame(frame)
+            except Exception:
+                log.exception("server mic frame failed")
+
+    def stop(self) -> None:
+        if self.task:
+            self.task.cancel()
+        if self.stream:
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
+        self.stream = None
+
+
 # ---------------------------------------------------------------- start at login
 
 AGENT = Path.home() / "Library/LaunchAgents/local.jarvis.assistant.plist"

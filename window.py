@@ -69,10 +69,13 @@ class AppDelegate(NSObject):
         config = WKWebViewConfiguration.alloc().init()
         config.setMediaTypesRequiringUserActionForPlayback_(0)  # Jarvis can talk without a click
         prefs = config.preferences()
-        try:
-            prefs.setValue_forKey_(True, "developerExtrasEnabled")  # right-click > Inspect, for debugging
-        except Exception:
-            pass
+        for setter, value in (("_setDeveloperExtrasEnabled_", True),   # right-click > Inspect
+                              ("_setMediaDevicesEnabled_", True),      # navigator.mediaDevices
+                              ("_setMediaCaptureRequiresSecureConnection_", False)):
+            try:
+                getattr(prefs, setter)(value)
+            except Exception:
+                pass
         web = WKWebView.alloc().initWithFrame_configuration_(win.contentView().bounds(), config)
         web.setAutoresizingMask_(18)  # width + height follow the window
         web.setValue_forKey_(False, "drawsBackground")
@@ -116,7 +119,22 @@ def build_menu() -> NSMenu:
     return bar
 
 
+def adopt_jarvis_identity() -> None:
+    """We run as Python, so WebKit reads Python's Info.plist and hides the microphone unless it
+    finds a usage description. Give the running process Jarvis.app's details (rumps does the same)."""
+    from Foundation import NSBundle
+    try:
+        info = NSBundle.mainBundle().infoDictionary()
+        info["CFBundleName"] = "Jarvis"
+        info["CFBundleIdentifier"] = "local.jarvis.assistant"
+        info["NSMicrophoneUsageDescription"] = 'Jarvis listens for "Hey Jarvis" and to what you say.'
+        info["NSCameraUsageDescription"] = 'Jarvis looks through the camera only when you ask.'
+    except Exception as e:
+        print("couldn't set bundle info:", e, file=sys.stderr)
+
+
 def main() -> None:
+    adopt_jarvis_identity()
     NSProcessInfo.processInfo().setProcessName_("Jarvis")
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
