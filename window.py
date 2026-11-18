@@ -8,6 +8,8 @@ Usage:  .venv/bin/python window.py http://127.0.0.1:8765/?app=1
 
 from __future__ import annotations
 
+import datetime
+import faulthandler
 import sys
 from pathlib import Path
 
@@ -24,6 +26,11 @@ from WebKit import WKWebView, WKWebViewConfiguration
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765/?app=1"
 HERE = Path(__file__).resolve().parent
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+
+
+def note(msg: str) -> None:
+    """Goes to window.log (launch.sh sends this process's output there)."""
+    print(f"{datetime.datetime.now():%H:%M:%S} {msg}", file=sys.stderr, flush=True)
 
 
 class UIDelegate(NSObject):
@@ -43,9 +50,26 @@ class UIDelegate(NSObject):
         return None
 
 
+class NavDelegate(NSObject):
+    def webViewWebContentProcessDidTerminate_(self, webview):
+        note("web page process stopped; reloading")
+        webview.reload()
+
+
+class WinDelegate(NSObject):
+    def windowWillClose_(self, notification):
+        note("window closed")
+
+    def windowDidMiniaturize_(self, notification):
+        note("window minimised")
+
+
 class AppDelegate(NSObject):
     def applicationShouldTerminateAfterLastWindowClosed_(self, app):
         return True
+
+    def applicationWillTerminate_(self, notification):
+        note("Jarvis window app quitting")
 
     def applicationDidFinishLaunching_(self, note):
         frame = NSMakeRect(0, 0, 980, 860)
@@ -81,6 +105,10 @@ class AppDelegate(NSObject):
         web.setValue_forKey_(False, "drawsBackground")
         self.ui = UIDelegate.alloc().init()
         web.setUIDelegate_(self.ui)
+        self.nav = NavDelegate.alloc().init()
+        web.setNavigationDelegate_(self.nav)
+        self.windel = WinDelegate.alloc().init()
+        win.setDelegate_(self.windel)
         web.loadRequest_(NSURLRequest.requestWithURL_(NSURL.URLWithString_(URL)))
         win.setContentView_(web)
         win.makeKeyAndOrderFront_(None)
@@ -134,6 +162,8 @@ def adopt_jarvis_identity() -> None:
 
 
 def main() -> None:
+    faulthandler.enable()  # a crash prints a traceback to window.log
+    note(f"starting window for {URL}")
     adopt_jarvis_identity()
     NSProcessInfo.processInfo().setProcessName_("Jarvis")
     app = NSApplication.sharedApplication()

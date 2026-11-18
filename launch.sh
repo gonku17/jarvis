@@ -29,7 +29,7 @@ fi
 
 # 3. The orb window: Jarvis's own native window. `exec` keeps this the Jarvis.app process.
 if "$JARVIS_DIR/.venv/bin/python" -c "import WebKit, AppKit" 2>/dev/null; then
-  cd "$JARVIS_DIR" && exec .venv/bin/python window.py "$URL"
+  cd "$JARVIS_DIR" && exec .venv/bin/python window.py "$URL" >>"$JARVIS_DIR/window.log" 2>&1
 fi
 # Fallback if the window packages aren't installed: a browser in app mode, else Safari.
 for app in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium"; do

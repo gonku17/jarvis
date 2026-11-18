@@ -124,3 +124,10 @@ body {
   background: linear-gradient(transparent, rgba(127, 227, 255, 0.35), transparent); animation: scan 1.6s linear infinite; }
 @keyframes scan { to { top: 100%; } }
 @keyframes snapIn { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: none; } }
+
+/* hand gestures indicator */
+.gestures { position: absolute; left: 18px; top: 8px; z-index: 4; font-size: 15px; display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px; background: rgba(127, 227, 255, 0.06); border: 1px solid rgba(127, 227, 255, 0.18); }
+.cam-dot { width: 7px; height: 7px; border-radius: 50%; background: #666; }
+.cam-dot.on { background: #30a46c; box-shadow: 0 0 6px #30a46c; }
+.gesture-flash { position: absolute; left: 100%; margin-left: 10px; font-size: 34px; animation: snapIn 0.3s ease-out; }

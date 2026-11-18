@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { SiriOrb } from "./SiriOrb"
+import { Gestures } from "./Gestures"
 import { Hud } from "./Hud"
 
 type Phase = "loading" | "idle" | "listening" | "thinking" | "talking"
@@ -20,6 +21,9 @@ export default function App() {
   const [log, setLog] = useState<Msg[]>([])
   const [boot, setBoot] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null)
   const [booted, setBooted] = useState(false)
+  const [gesturesOn, setGesturesOn] = useState(() => { try { return localStorage.getItem("gestures") === "1" } catch { return false } })
+  const [gestureErr, setGestureErr] = useState("")
+  const onGestureErr = useCallback((m: string) => { setGestureErr(m); setGesturesOn(false) }, [])
   const [snap, setSnap] = useState<string | null>(null)  // last webcam photo, shown while Jarvis looks
   const [draft, setDraft] = useState("")
   const [brain, setBrain] = useState<"gemma" | "claude">("gemma")
@@ -404,6 +408,14 @@ export default function App() {
             Quick answers: use a small, fast model for simple questions
             {!fast.available && <span className="muted"> (not installed yet)</span>}
           </label>
+          <label className="toggle">
+            <input type="checkbox" checked={gesturesOn} onChange={(e) => {
+              setGesturesOn(e.target.checked); setGestureErr("")
+              try { localStorage.setItem("gestures", e.target.checked ? "1" : "0") } catch { /* ignore */ }
+            }} />
+            Hand gestures: ✋ hold up your hand to talk or stop, 👍 play/pause, swipe to skip (uses the camera while this window is open)
+          </label>
+          {gestureErr && <p className="err-note">{gestureErr}</p>}
           <div className="settings-title">Microphone</div>
           <select className="mic-select" value={(serverMic.current ? serverMicName : micId) || "default"} onFocus={listMics}
             onChange={(e) => pickMic(e.target.value)}>
@@ -480,6 +492,7 @@ export default function App() {
       <div className={"stage" + (hudOn ? " with-hud" : "") + (boot && !booted ? " booting" : "")}>
       {hudOn && <Hud orbRef={orbRef} phase={phase} lastUserText={lastUserText} send={send} resetKey={hudReset}
         ask={(text) => send({ type: "text", text })} />}
+      {gesturesOn && started && <Gestures send={send} onError={onGestureErr} />}
       {boot && <Boot checks={boot} onDone={() => setBooted(true)} />}
       {snap && <div className="snap"><img src={`data:image/jpeg;base64,${snap}`} alt="What Jarvis sees" /><div className="scanline" /></div>}
       <div ref={orbRef} className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">

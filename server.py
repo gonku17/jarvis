@@ -510,6 +510,15 @@ class Session:
             name = "Claude" if brain == "claude" else "Gemma, running locally"
             await self.speak_only(f"Switching my brain to {name}.")
 
+    async def wait_until_spoken(self, limit: float = 8.0) -> None:
+        """Wait for the window to finish playing what was just said (it sends playback_done)."""
+        self.spoken = asyncio.Event()
+        try:
+            await asyncio.wait_for(self.spoken.wait(), limit)
+        except asyncio.TimeoutError:
+            pass
+        self.no_follow_up = False
+
     async def camera_frame(self) -> str | None:
         """Ask the window for one webcam photo (base64 JPEG)."""
         self.frame_wait = self.loop.create_future()
@@ -644,6 +653,9 @@ class Session:
 
         image = None
         if result and result.camera:
+            if self.brain != "claude":
+                await self.speak_only("Let me have a look. Give me a moment.")
+                await self.wait_until_spoken()
             image = await self.camera_frame()
             if not image:
                 msg = "I can't see through the camera right now. Check that Jarvis is allowed to use it."
@@ -753,7 +765,12 @@ class Session:
 
     async def on_json(self, msg: dict) -> None:
         kind = msg.get("type")
-        if kind == "playback_done" and getattr(self, "no_follow_up", False):
+        spoken = getattr(self, "spoken", None)
+        if kind == "playback_done" and spoken is not None and not spoken.is_set():
+            # a filler line ("Let me have a look") finished; the answer is still coming
+            spoken.set()
+            await self.set_state("thinking")
+        elif kind == "playback_done" and getattr(self, "no_follow_up", False):
             # e.g. after "Alexa, lights off": don't treat the speaker's reply as a question for Jarvis
             self.no_follow_up = False
             engines.wake_reset()
@@ -1074,6 +1091,36 @@ async def api_status() -> dict:
     st = LOCAL.status if LOCAL else {}
     return {"always_on": LOCAL is not None, "state": st.get("state", "idle"),
             "brain": st.get("brain", load_settings().get("brain", "gemma"))}
+
+
+MP_VERSION = "0.10.22-rc.20250304"  # must match @mediapipe/tasks-vision in web-src/package.json
+MP_FILES = {
+    "vision_wasm_internal.js": f"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@{MP_VERSION}/wasm/vision_wasm_internal.js",
+    "vision_wasm_internal.wasm": f"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@{MP_VERSION}/wasm/vision_wasm_internal.wasm",
+    "vision_wasm_nosimd_internal.js": f"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@{MP_VERSION}/wasm/vision_wasm_nosimd_internal.js",
+    "vision_wasm_nosimd_internal.wasm": f"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@{MP_VERSION}/wasm/vision_wasm_nosimd_internal.wasm",
+    "gesture_recognizer.task": "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+}
+
+
+@app.get("/mp/{name}")
+async def mediapipe_file(name: str):
+    """Hand-gesture model files: downloaded once (about 18 MB), then served from the Jarvis folder."""
+    from fastapi import HTTPException
+    if name not in MP_FILES:
+        raise HTTPException(404)
+    path = MODELS / "mediapipe" / f"{MP_VERSION}-{name}" if name != "gesture_recognizer.task" else MODELS / "mediapipe" / name
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        log.info("Downloading %s for hand gestures", name)
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
+            r = await c.get(MP_FILES[name])
+            r.raise_for_status()
+        tmp = path.with_suffix(path.suffix + ".part")
+        tmp.write_bytes(r.content)
+        tmp.rename(path)
+    media = "application/wasm" if name.endswith(".wasm") else "text/javascript" if name.endswith(".js") else "application/octet-stream"
+    return FileResponse(path, media_type=media)
 
 
 @app.get("/api/mics")
