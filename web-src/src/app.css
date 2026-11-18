@@ -101,3 +101,17 @@ body {
 .err-note { color: #ff9b9b; font-size: 12.5px; }
 .app { position: relative; }
 .settings { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); width: calc(100% - 32px); z-index: 10; max-height: calc(100vh - 90px); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+
+/* start-up systems check */
+.stage.booting .hud-panel { opacity: 0 !important; }
+.stage .hud-panel { transition: opacity 0.9s ease, box-shadow 0.3s, border-color 0.3s; }
+.boot { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin-left: calc(-1 * min(36vh, 80vw) / 2 - 190px); z-index: 3; pointer-events: none; font: 11px/1.7 ui-monospace, "SF Mono", Menlo, monospace;
+  color: rgba(127, 227, 255, 0.75); letter-spacing: 0.04em; text-transform: uppercase; transition: opacity 1.2s; min-width: 250px; }
+.boot.fade { opacity: 0; transition-delay: 1.2s; }
+.boot-title { color: #7fe3ff; margin-bottom: 4px; text-shadow: 0 0 10px rgba(127, 227, 255, 0.6); }
+.boot-line { display: flex; gap: 6px; animation: bootIn 0.25s ease-out; color: rgba(255, 190, 120, 0.8); }
+.boot-line.ok { color: rgba(127, 227, 255, 0.75); }
+.boot-line .dots { flex: 1; border-bottom: 1px dotted currentColor; opacity: 0.35; margin-bottom: 6px; }
+.boot-line.all { margin-top: 4px; color: #9dffcb; text-shadow: 0 0 8px rgba(120, 255, 190, 0.5); }
+@keyframes bootIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+@media (max-width: 640px) { .boot { top: 0; transform: translateX(-50%); margin-left: 0; } }

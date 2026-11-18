@@ -18,6 +18,8 @@ export default function App() {
   const [connected, setConnected] = useState(false)
   const [phase, setPhase] = useState<Phase>("loading")
   const [log, setLog] = useState<Msg[]>([])
+  const [boot, setBoot] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null)
+  const [booted, setBooted] = useState(false)
   const [draft, setDraft] = useState("")
   const [brain, setBrain] = useState<"gemma" | "claude">("gemma")
   const [hasKey, setHasKey] = useState(false)
@@ -112,7 +114,10 @@ export default function App() {
     const ws = new WebSocket(`${proto}://${location.host}/ws`)
     ws.binaryType = "arraybuffer"
     wsRef.current = ws
-    ws.onopen = () => setConnected(true)
+    ws.onopen = () => {
+      setConnected(true)
+      ws.send(JSON.stringify({ type: "window_ready" }))
+    }
     ws.onclose = () => {
       setConnected(false)
       setTimeout(connect, 1500)
@@ -138,6 +143,9 @@ export default function App() {
           if (m.personality) setPersonality(m.personality)
           if (m.personalities) setPersonalities(m.personalities)
           setVoiceNote("")
+          break
+        case "systems":
+          setBoot((b) => b ?? m.checks)  // once per window
           break
         case "voice_loading":
           setVoiceNote("Loading voice… (the first time downloads about 120 MB)")
@@ -438,9 +446,10 @@ export default function App() {
         </div>
       )}
 
-      <div className={"stage" + (hudOn ? " with-hud" : "")}>
+      <div className={"stage" + (hudOn ? " with-hud" : "") + (boot && !booted ? " booting" : "")}>
       {hudOn && <Hud orbRef={orbRef} phase={phase} lastUserText={lastUserText} send={send} resetKey={hudReset}
         ask={(text) => send({ type: "text", text })} />}
+      {boot && <Boot checks={boot} onDone={() => setBooted(true)} />}
       <div ref={orbRef} className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
         <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} style={orbStyle} />
       </div>
@@ -467,6 +476,36 @@ export default function App() {
           Start Jarvis
         </button>
       )}
+    </div>
+  )
+}
+
+// Film-style start-up: a systems check that types itself out next to the orb, then fades away.
+function Boot({ checks, onDone }: { checks: { name: string; ok: boolean; detail: string }[]; onDone: () => void }) {
+  const [shown, setShown] = useState(0)
+  const [gone, setGone] = useState(false)
+  const fired = useRef(false)
+  useEffect(() => {
+    const t = setInterval(() => setShown((n) => Math.min(n + 1, checks.length + 2)), 260)
+    return () => clearInterval(t)
+  }, [checks.length])
+  useEffect(() => {
+    if (shown === checks.length + 2 && !fired.current) {
+      fired.current = true
+      setTimeout(onDone, 900)  // the floating panels come online
+      setTimeout(() => setGone(true), 3500)
+    }
+  }, [shown, checks.length, onDone])
+  if (gone) return null
+  return (
+    <div className={"boot" + (shown > checks.length + 1 ? " fade" : "")}>
+      <div className="boot-title">J.A.R.V.I.S. · systems check</div>
+      {checks.slice(0, shown).map((c) => (
+        <div key={c.name} className={"boot-line" + (c.ok ? " ok" : "")}>
+          <span>{c.name}</span><span className="dots" /><span>{c.ok ? "online" : c.detail}</span>
+        </div>
+      ))}
+      {shown > checks.length && <div className="boot-line ok all">All core systems online</div>}
     </div>
   )
 }

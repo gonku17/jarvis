@@ -250,11 +250,14 @@ engines = Engines()
 SESSIONS: set = set()
 
 
-async def announce(text: str) -> None:
-    """Speak something unprompted (e.g. a timer) in every open Jarvis window."""
+async def announce(text: str) -> bool:
+    """Speak something unprompted (e.g. a timer) in every open Jarvis window. True if anyone heard it."""
+    spoke = False
     for s in list(SESSIONS):
         if s.state in ("idle", "listening"):
             await s.speak_only(text)
+            spoke = True
+    return spoke
 
 
 from skills import Skills  # noqa: E402
@@ -708,6 +711,8 @@ class Session:
             engines.wake_reset()
             self.start_listening(follow_up=True)
             await self.set_state("listening")
+        elif kind == "window_ready":
+            asyncio.create_task(greet(self))
         elif kind == "ptt" and self.state == "talking":
             await self.interrupt()
         elif kind == "ptt" and self.state == "idle":
@@ -852,6 +857,8 @@ async def load_everything() -> None:
                          FAST_MODEL, FAST_MODEL, LLM_MODEL)
             if LLM_MODEL not in names:
                 log.warning("Model %s not found in Ollama. Run: ollama pull %s", LLM_MODEL, LLM_MODEL)
+            global BRAIN_OK
+            BRAIN_OK = LLM_MODEL in names
             for m in ([FAST_MODEL] if FAST_AVAILABLE else []) + ([LLM_MODEL] if LLM_MODEL in names else []):
                 log.info("Warming up %s…", m)
                 await c.post(
@@ -861,8 +868,85 @@ async def load_everything() -> None:
                 )
     except Exception:
         log.warning("Ollama is not reachable at %s. Start the Ollama app.", OLLAMA_URL)
+    SYSTEMS["brain"] = BRAIN_OK
     READY.set()
     log.info("Jarvis is ready: open http://127.0.0.1:8765")
+    asyncio.create_task(proactive_loop())
+
+
+SYSTEMS: dict = {}
+PROACTIVE_EVERY = 60
+BRAIN_OK = False
+GREETED = False
+
+
+def systems_check() -> list[dict]:
+    """The start-up checklist the window shows, film style."""
+    st = load_settings()
+    voice = "Kokoro" if engines.kokoro is not None and not engines.voice.startswith("piper") else "Piper"
+    return [
+        {"name": "Wake word", "ok": engines.wake is not None, "detail": "Hey Jarvis"},
+        {"name": "Speech recognition", "ok": engines.stt is not None, "detail": f"Whisper {WHISPER_MODEL}"},
+        {"name": "Voice", "ok": True, "detail": voice},
+        {"name": "Brain", "ok": SYSTEMS.get("brain", False) or st.get("brain") == "claude",
+         "detail": "Claude" if st.get("brain") == "claude" else LLM_MODEL},
+        {"name": "Calendar", "ok": bool(st.get("allow_calendar")), "detail": "linked" if st.get("allow_calendar") else "off"},
+        {"name": "Mail", "ok": bool(st.get("allow_mail")), "detail": "linked" if st.get("allow_mail") else "off"},
+        {"name": "Smart home", "ok": st.get("smart_home", "alexa") != "off", "detail": "via Alexa" if st.get("smart_home", "alexa") != "off" else "off"},
+    ]
+
+
+async def greet(session: "Session") -> None:
+    """First window of this launch: show the systems check and say hello."""
+    global GREETED
+    await READY.wait()
+    checks = systems_check()
+    await session.send(type="systems", checks=checks)
+    if GREETED or load_settings().get("startup_greeting", True) is False:
+        return
+    GREETED = True
+    core = {c["name"]: c["ok"] for c in checks if c["name"] in ("Wake word", "Speech recognition", "Voice", "Brain")}
+    text = await skills.startup_greeting(core)
+    await asyncio.sleep(1.2)  # let the boot animation play first
+    if session.state == "idle":
+        await session.speak_only(text)
+
+
+async def proactive_loop() -> None:
+    """Jarvis speaks first: a meeting about to start, new email, low battery."""
+    said: set = set()
+    last_unread = None
+    battery_warned = False
+    while True:
+        await asyncio.sleep(PROACTIVE_EVERY)
+        try:
+            if not SESSIONS or load_settings().get("proactive", True) is False:
+                continue
+            info = await skills.hud()
+            ev = info.get("event") or {}
+            if ev.get("title") and ev.get("start"):
+                mins = (ev["start"] - time.time()) / 60
+                key = (ev["title"], ev["start"])
+                if 0 < mins <= 10 and key not in said and await announce(f"Heads up, {ev['title']} starts in {max(1, round(mins))} minute{'s' if round(mins) != 1 else ''}."):
+                    said.add(key)
+            mail = info.get("mail") or {}
+            unread = mail.get("unread")
+            if isinstance(unread, int):
+                if last_unread is not None and unread > last_unread and mail.get("latest") and not skills.quiet():
+                    m = mail["latest"][0]
+                    who = re.sub(r"\s*<.*?>", "", m.get("from", "")).strip('" ') or "someone"
+                    subject = (m.get("subject") or "no subject").rstrip(".!? ")
+                    if not await announce(f"New email from {who}: {subject}."):
+                        continue  # busy talking: try again next round
+                last_unread = unread
+            b = info.get("battery")
+            if b:
+                if b["charging"]:
+                    battery_warned = False
+                elif b["percent"] <= 15 and not battery_warned:
+                    battery_warned = await announce(f"Battery is at {b['percent']} percent. You might want to plug in.")
+        except Exception:
+            log.exception("proactive check failed")
 
 
 @app.on_event("startup")

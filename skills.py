@@ -527,7 +527,8 @@ class Skills:
                 return {"title": None}
             start, _, title = up[0]
             day = "Today" if start.date() == n.date() else "Tomorrow"
-            return {"title": title, "when": f"{day} {start.strftime('%-I:%M %p')}", "count": len(up)}
+            return {"title": title, "when": f"{day} {start.strftime('%-I:%M %p')}", "count": len(up),
+                    "start": start.timestamp()}
 
         async def get_mail():
             if not self.allowed("mail"):
@@ -582,7 +583,7 @@ class Skills:
 
     async def handle(self, text: str) -> Result | None:
         t = text.lower().strip().rstrip(".!?")
-        for fn in (self.memory_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
+        for fn in (self.memory_skill, self.scene_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
                    self.timer_skill, self.reminder_skill, self.app_skill,
                    self.volume_skill, self.music_skill, self.play_skill, self.shortcut_skill, self.time_skill,
                    self.calendar_skill, self.mail_skill,
@@ -799,6 +800,144 @@ end tell"""
         wake = "Hey Google" if use_google else "Alexa"
         # Say it slowly and clearly, with a pause after the wake word, so the speaker catches it.
         return Result(reply=f"{wake}... {command}.", follow_up=False)
+
+    # -- start-up greeting, like the films
+    def hello_word(self) -> str:
+        h = dt.datetime.now().hour
+        return "Good morning" if 5 <= h < 12 else "Good afternoon" if 12 <= h < 18 else "Good evening"
+
+    async def startup_greeting(self, checks: dict) -> str:
+        name = self.preferred_name()
+        parts = [f"{self.hello_word()}{', ' + name if name else ''}. Jarvis is online"
+                 + (" and all systems are running." if all(checks.values()) else ".")]
+        try:
+            info = await asyncio.wait_for(self.hud(), 7)
+        except Exception:
+            info = {}
+        w = info.get("weather")
+        if w:
+            parts.append(f"It's {w['temp']} degrees and {w['desc']} in {w['place']}.")
+        ev = info.get("event") or {}
+        if ev.get("title") and ev.get("when", "").startswith("Today"):
+            parts.append(f"Your next event is {ev['title']} at {ev['when'][6:]}.")
+        b = info.get("battery")
+        if b and not b["charging"] and b["percent"] < 20:
+            parts.append(f"Battery is at {b['percent']} percent, you may want to plug in.")
+        parts.append("How can I help?")
+        return " ".join(parts)
+
+    def quiet(self) -> bool:
+        """True while study mode is on: Jarvis keeps non-urgent news to itself."""
+        return time.time() < self.__dict__.get("_quiet_until", 0)
+
+    # -- scenes: one phrase, several things at once
+    SCENES = {
+        "study": re.compile(r"^(?:start |begin |enter |activate |turn on |switch to )?(?:study|focus|work|homework|revision) mode(?: on| please)?$|^(?:time to|let's|i need to|i'm going to) (?:study|focus|revise|do (?:my )?homework)$"),
+        "study_off": re.compile(r"^(?:end|stop|exit|leave|finish|turn off|cancel|deactivate) (?:the )?(?:study|focus|work|homework|revision) mode$|^(?:study|focus|work) mode off$|^i'?m done (?:studying|working|with (?:my )?homework)$"),
+        "night": re.compile(r"^(?:good ?night|goodnight|night night)(?: jarvis)?$|^(?:i'?m )?going to (?:bed|sleep)$|^(?:sleep|night|bedtime) mode$"),
+        "home": re.compile(r"^(?:i'?m|i am) (?:home|back)(?: jarvis)?$|^honey,? i'?m home$|^(?:hey )?jarvis,? i'?m (?:home|back)$"),
+    }
+
+    async def scene_skill(self, t: str, raw: str) -> Result | None:
+        scene = next((k for k, rx in self.SCENES.items() if rx.match(t)), None)
+        if not scene:
+            return None
+        loop = asyncio.get_running_loop()
+        run = lambda f, *a: loop.run_in_executor(None, f, *a)  # noqa: E731
+        name = self.preferred_name()
+        smart = (self.settings() or {}).get("smart_home", "alexa") != "off"
+
+        async def pause_music() -> bool:
+            info = await run(now_playing)
+            if info and info.get("playing"):
+                await run(osascript, f"tell application {as_str(info['app'])} to pause")
+                self.__dict__.get("_hud_cache", {}).pop("music", None)
+                return True
+            return False
+
+        def run_shortcut(words: str) -> str | None:
+            try:
+                names = subprocess.run(["shortcuts", "list"], capture_output=True, text=True, timeout=5).stdout.splitlines()
+            except Exception:
+                return None
+            pick = next((n for n in names if re.search(words, n, re.I)), None)
+            if pick:
+                subprocess.Popen(["shortcuts", "run", pick])
+            return pick
+
+        if scene == "study":
+            done = []
+            if await pause_music():
+                done.append("paused your music")
+            cur = int((await run(osascript, "output volume of (get volume settings)")) or 50)
+            if cur > 35:
+                self.__dict__["_volume_before"] = cur
+                await run(osascript, "set volume output volume 35")
+                done.append("turned the volume down")
+            sc = await run(run_shortcut, r"\b(study|focus|do not disturb|dnd)\b")
+            if sc:
+                done.append(f"ran your {sc} shortcut")
+            await self.timer_skill("set a timer for 25 minutes", "")
+            self.__dict__["_quiet_until"] = time.time() + 25 * 60
+            done.append("started a 25 minute focus timer")
+            said = ", ".join(done[:-1]) + (" and " if len(done) > 1 else "") + done[-1]
+            return Result(reply=f"Study mode is on. I've {said}. I'll stay quiet until you need me.", follow_up=False)
+
+        if scene == "study_off":
+            for task in self.timers:
+                if not task.done():
+                    task.cancel()
+            self.__dict__["_quiet_until"] = 0
+            before = self.__dict__.pop("_volume_before", None)
+            if before:
+                await run(osascript, f"set volume output volume {before}")
+            await run(run_shortcut, r"\b(end|stop|exit) (study|focus)\b")
+            return Result(reply="Study mode is off. Nice work." + (" Volume's back to normal." if before else ""))
+
+        if scene == "night":
+            await pause_music()
+            parts = [f"Good night{', ' + name if name else ''}."]
+            place = self.memory.fact_value(r"lives in (.+)")
+            try:
+                parts.append(await asyncio.wait_for(weather(place, tomorrow=True), 8))
+            except Exception:
+                pass
+            if self.allowed("calendar"):
+                try:
+                    evs = await asyncio.wait_for(run(calendar_events, 1, 1), 8)
+                    timed = [e for e in evs if not e[1]]
+                    if timed:
+                        parts.append(f"Your first thing tomorrow is {timed[0][2]} at {timed[0][0].strftime('%-I:%M %p')}.")
+                    else:
+                        parts.append("Nothing on your calendar tomorrow.")
+                except Exception:
+                    pass
+            await run(run_shortcut, r"\b(good ?night|bed ?time|sleep)\b")
+            parts.append("Sleep well.")
+            if smart:
+                parts.append("Alexa... turn off the lights.")
+            return Result(reply=" ".join(parts), follow_up=False)
+
+        # home
+        parts = [f"Welcome home{', ' + name if name else ''}. It's {dt.datetime.now().strftime('%-I:%M %p')}."]
+        try:
+            info = await asyncio.wait_for(self.hud(), 8)
+        except Exception:
+            info = {}
+        w = info.get("weather")
+        if w:
+            parts.append(f"It's {w['temp']} degrees and {w['desc']} outside.")
+        mail = info.get("mail") or {}
+        if mail.get("unread"):
+            parts.append(f"You have {mail['unread']} unread email{'s' if mail['unread'] != 1 else ''}.")
+        ev = info.get("event") or {}
+        if ev.get("title") and ev.get("when", "").startswith("Today"):
+            parts.append(f"Coming up: {ev['title']} at {ev['when'][6:]}.")
+        await run(run_shortcut, r"\b(i'?m home|arrive home|welcome home)\b")
+        if smart:
+            parts.append("Alexa... turn on the lights.")
+            return Result(reply=" ".join(parts), follow_up=False)
+        return Result(reply=" ".join(parts))
 
     # -- morning briefing
     async def briefing_skill(self, t: str, raw: str) -> Result | None:
