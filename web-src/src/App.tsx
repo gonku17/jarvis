@@ -20,6 +20,7 @@ export default function App() {
   const [log, setLog] = useState<Msg[]>([])
   const [boot, setBoot] = useState<{ name: string; ok: boolean; detail: string }[] | null>(null)
   const [booted, setBooted] = useState(false)
+  const [snap, setSnap] = useState<string | null>(null)  // last webcam photo, shown while Jarvis looks
   const [draft, setDraft] = useState("")
   const [brain, setBrain] = useState<"gemma" | "claude">("gemma")
   const [hasKey, setHasKey] = useState(false)
@@ -149,6 +150,11 @@ export default function App() {
           break
         case "systems":
           setBoot((b) => b ?? m.checks)  // once per window
+          break
+        case "camera_snap":
+          takePhoto().then(
+            (data) => { ws.send(JSON.stringify({ type: "camera_frame", data })); setSnap(data); setTimeout(() => setSnap(null), 6000) },
+            (e) => ws.send(JSON.stringify({ type: "camera_frame", data: null, error: String(e?.name || e) })))
           break
         case "mic_level":
           inputVol.current = m.level
@@ -475,6 +481,7 @@ export default function App() {
       {hudOn && <Hud orbRef={orbRef} phase={phase} lastUserText={lastUserText} send={send} resetKey={hudReset}
         ask={(text) => send({ type: "text", text })} />}
       {boot && <Boot checks={boot} onDone={() => setBooted(true)} />}
+      {snap && <div className="snap"><img src={`data:image/jpeg;base64,${snap}`} alt="What Jarvis sees" /><div className="scanline" /></div>}
       <div ref={orbRef} className="orb-wrap" onClick={() => send({ type: "ptt" })} title="Click to talk">
         <SiriOrb phase={phase} brain={brain} inVol={inputVol} outVol={outputVol} style={orbStyle} />
       </div>
@@ -533,4 +540,26 @@ function Boot({ checks, onDone }: { checks: { name: string; ok: boolean; detail:
       {shown > checks.length && <div className="boot-line ok all">All core systems online</div>}
     </div>
   )
+}
+
+// One webcam photo for "what am I holding?": camera on for about a second, then off again.
+async function takePhoto(): Promise<string> {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } })
+  try {
+    const v = document.createElement("video")
+    v.muted = true
+    v.playsInline = true
+    v.srcObject = stream
+    await v.play()
+    await new Promise((r) => setTimeout(r, 700))  // let the camera adjust its exposure
+    const w = 768, h = Math.round((v.videoHeight / v.videoWidth) * w) || 432
+    const c = document.createElement("canvas")
+    c.width = w; c.height = h
+    const g = c.getContext("2d")!
+    g.translate(w, 0); g.scale(-1, 1)  // mirror, like looking in a mirror
+    g.drawImage(v, 0, 0, w, h)
+    return c.toDataURL("image/jpeg", 0.8).split(",")[1]
+  } finally {
+    stream.getTracks().forEach((t) => t.stop())
+  }
 }

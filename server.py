@@ -49,6 +49,8 @@ def pick_model(messages: list[dict]) -> str:
     """Quick small model for short everyday questions, Gemma for anything harder or with extra facts."""
     if not FAST_AVAILABLE or load_settings().get("fast_answers", True) is False:
         return LLM_MODEL
+    if messages and messages[-1].get("images"):
+        return LLM_MODEL  # the small model can't see
     last = (messages[-1]["content"] if messages else "").strip()
     if len(last) > 120 or "\n" in last or HARD_RE.search(last) or not SMALLTALK_RE.match(last):
         return LLM_MODEL
@@ -359,7 +361,16 @@ async def claude_stream(messages: list[dict]):
 
     client = anthropic.AsyncAnthropic(api_key=key, max_retries=1, timeout=60)
     system = messages[0]["content"]
-    convo = [m for m in messages[1:] if m["role"] in ("user", "assistant")]
+    convo = []
+    for m in messages[1:]:
+        if m["role"] not in ("user", "assistant"):
+            continue
+        if m.get("images"):
+            convo.append({"role": m["role"], "content": [
+                *({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img}} for img in m["images"]),
+                {"type": "text", "text": m["content"]}]})
+        else:
+            convo.append({"role": m["role"], "content": m["content"]})
     async with client.beta.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=1024,  # replies are spoken, so they are deliberately short
@@ -499,6 +510,16 @@ class Session:
             name = "Claude" if brain == "claude" else "Gemma, running locally"
             await self.speak_only(f"Switching my brain to {name}.")
 
+    async def camera_frame(self) -> str | None:
+        """Ask the window for one webcam photo (base64 JPEG)."""
+        self.frame_wait = self.loop.create_future()
+        await self.send(type="camera_snap")
+        try:
+            data = await asyncio.wait_for(self.frame_wait, 10)
+        except asyncio.TimeoutError:
+            data = None
+        return data or None
+
     async def use_server_mic(self, device: str | None) -> None:
         """The window can't reach the mic itself (native window): listen through the Mac directly."""
         import background
@@ -621,9 +642,20 @@ class Session:
             skills.memory.add_turns(text, result.reply or "Done.")
             return
 
+        image = None
+        if result and result.camera:
+            image = await self.camera_frame()
+            if not image:
+                msg = "I can't see through the camera right now. Check that Jarvis is allowed to use it."
+                await self.speak_only(msg)
+                return
         system = system_prompt(self.brain) + " " + skills.system_notes()
         self.history.append({"role": "user", "content": text})
         messages = [{"role": "system", "content": system}] + self.history[-HISTORY_TURNS * 2 :]
+        if image:
+            messages[-1] = {"role": "user", "images": [image], "content": (
+                "This is a photo just taken by the user's webcam, showing them and what's in front of them. "
+                "Answer briefly and naturally, as if you can see it yourself: " + text)}
         if result and result.context:
             # Put fresh facts right next to the question (small local models ignore them in the system prompt).
             messages[-1] = {"role": "user", "content": (
@@ -733,6 +765,12 @@ class Session:
             await self.set_state("listening")
         elif kind == "window_ready":
             asyncio.create_task(greet(self))
+        elif kind == "camera_frame":
+            fut = getattr(self, "frame_wait", None)
+            if fut and not fut.done():
+                if msg.get("error"):
+                    log.warning("camera: %s", msg["error"])
+                fut.set_result(msg.get("data"))
         elif kind == "server_mic":
             asyncio.create_task(self.use_server_mic(msg.get("device") or None))
         elif kind == "ptt" and self.state == "talking":

@@ -115,3 +115,12 @@ body {
 .boot-line.all { margin-top: 4px; color: #9dffcb; text-shadow: 0 0 8px rgba(120, 255, 190, 0.5); }
 @keyframes bootIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
 @media (max-width: 640px) { .boot { top: 0; transform: translateX(-50%); margin-left: 0; } }
+
+/* webcam photo while Jarvis looks at it */
+.snap { position: absolute; right: 18px; top: 8px; z-index: 4; width: 200px; border-radius: 14px; overflow: hidden; pointer-events: none;
+  border: 1px solid rgba(127, 227, 255, 0.5); box-shadow: 0 0 24px rgba(34, 199, 255, 0.35); animation: snapIn 0.4s ease-out; }
+.snap img { display: block; width: 100%; filter: saturate(0.85) contrast(1.05); }
+.snap .scanline { position: absolute; left: 0; right: 0; height: 30%; top: -30%;
+  background: linear-gradient(transparent, rgba(127, 227, 255, 0.35), transparent); animation: scan 1.6s linear infinite; }
+@keyframes scan { to { top: 100%; } }
+@keyframes snapIn { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: none; } }

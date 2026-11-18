@@ -29,6 +29,7 @@ class Result:
     reply: str | None = None  # speak this directly, no LLM
     context: str | None = None  # give this to the LLM as extra information
     follow_up: bool = True  # listen for a follow-up after speaking
+    camera: bool = False  # take a webcam photo and let the brain look at it
 
 
 # ---------------------------------------------------------------- memory
@@ -583,7 +584,7 @@ class Skills:
 
     async def handle(self, text: str) -> Result | None:
         t = text.lower().strip().rstrip(".!?")
-        for fn in (self.memory_skill, self.scene_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
+        for fn in (self.memory_skill, self.vision_skill, self.scene_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
                    self.timer_skill, self.reminder_skill, self.app_skill,
                    self.volume_skill, self.music_skill, self.play_skill, self.shortcut_skill, self.time_skill,
                    self.calendar_skill, self.mail_skill,
@@ -829,6 +830,19 @@ end tell"""
     def quiet(self) -> bool:
         """True while study mode is on: Jarvis keeps non-urgent news to itself."""
         return time.time() < self.__dict__.get("_quiet_until", 0)
+
+    # -- camera: "what am I holding?"
+    VISION_RE = re.compile(
+        r"\b(what am i holding|what(?:'s| is) in my hand|^what(?:'s| is) (?:this|that)(?: thing)?$|what do you see|what can you see|can you see (?:me|this|that)"
+        r"|look at (?:this|me|that)|take a look|how do i look|what colou?r is (?:this|my)|describe (?:what you see|this|me)"
+        r"|read (?:this|what i'm holding)|what am i wearing|identify this|scan this)\b")
+
+    async def vision_skill(self, t: str, raw: str) -> Result | None:
+        if (self.settings() or {}).get("camera", True) is False or not self.VISION_RE.search(t):
+            return None
+        if "screen" in t:
+            return None
+        return Result(camera=True)
 
     # -- scenes: one phrase, several things at once
     SCENES = {
