@@ -10,6 +10,12 @@ notify() { osascript -e "display notification \"$1\" with title \"Jarvis\"" >/de
 fail() { osascript -e "display alert \"Jarvis\" message \"$1\" as critical" >/dev/null 2>&1; exit 1; }
 
 [ -x "$JARVIS_DIR/.venv/bin/python" ] || fail "Jarvis isn't set up in $JARVIS_DIR yet. Run setup.sh there first."
+# Already open (maybe hidden with the red button)? Ask that copy to show itself.
+if [ "${1:-}" != "--background" ] && pgrep -f "python window.py" >/dev/null 2>&1; then
+  touch "$JARVIS_DIR/.show_window"
+  exit 0
+fi
+
 # 1. Ollama (the brain)
 if ! curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
   open -g -a Ollama 2>/dev/null || (nohup ollama serve >/dev/null 2>&1 &)
@@ -17,9 +23,10 @@ if ! curl -s -m 1 http://127.0.0.1:11434/api/tags >/dev/null; then
 fi
 
 # 2. Jarvis server (exits by itself ~20s after the window closes, unless Always on is enabled)
-if ! curl -s -m 1 -o /dev/null http://127.0.0.1:8765/; then
+# (a port check, not an HTTP probe: the server can be too busy loading to answer quickly)
+if ! lsof -ti tcp:8765 -sTCP:LISTEN >/dev/null 2>&1; then
   cd "$JARVIS_DIR" || fail "Can't open $JARVIS_DIR"
-  JARVIS_EXIT_WHEN_IDLE=1 nohup .venv/bin/python server.py >"$LOG" 2>&1 &
+  JARVIS_EXIT_WHEN_IDLE=1 nohup .venv/bin/python server.py >>"$LOG" 2>&1 &
   for _ in $(seq 40); do curl -s -m 1 -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
   curl -s -m 1 -o /dev/null http://127.0.0.1:8765/ || fail "Jarvis didn't start. See $LOG"
 fi
@@ -28,11 +35,6 @@ fi
 [ "${1:-}" = "--background" ] && exit 0
 
 # 3. The orb window: Jarvis's own native window. `exec` keeps this the Jarvis.app process.
-# Already open (maybe hidden with the red button)? Ask that copy to show itself.
-if pgrep -f "python window.py" >/dev/null 2>&1; then
-  touch "$JARVIS_DIR/.show_window"
-  exit 0
-fi
 if "$JARVIS_DIR/.venv/bin/python" -c "import WebKit, AppKit" 2>/dev/null; then
   cd "$JARVIS_DIR" && exec .venv/bin/python window.py "$URL" >>"$JARVIS_DIR/window.log" 2>&1
 fi

@@ -1191,4 +1191,9 @@ app.mount("/", StaticFiles(directory=WEB), name="web")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    finally:
+        # e.g. port already taken by another Jarvis: don't linger with model threads running
+        logging.shutdown()
+        os._exit(0)
