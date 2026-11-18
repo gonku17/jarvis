@@ -41,11 +41,11 @@ fi
 LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 for APP in "$HOME/Applications/Jarvis.app" "/Applications/Jarvis.app"; do
   [ -d "$APP" ] || continue
-  OLD_ICON="$(shasum "$APP/Contents/Resources/Jarvis.icns" 2>/dev/null | cut -c1-40)"
+  OLD_ICON="$(cat "$APP/Contents/Resources/Jarvis.icns" "$APP/Contents/Info.plist" 2>/dev/null | shasum | cut -c1-40)"
   rsync -a "$SRC/Jarvis.app/" "$APP/" && chmod +x "$APP/Contents/MacOS/Jarvis"
   xattr -dr com.apple.quarantine "$APP" 2>/dev/null
-  if [ "$OLD_ICON" != "$(shasum "$APP/Contents/Resources/Jarvis.icns" | cut -c1-40)" ]; then
-    # New icon: tell macOS so the Dock and Finder stop showing the cached old one.
+  if [ "$OLD_ICON" != "$(cat "$APP/Contents/Resources/Jarvis.icns" "$APP/Contents/Info.plist" | shasum | cut -c1-40)" ]; then
+    # New icon or settings: tell macOS so the Dock and Finder stop showing the cached old one.
     touch "$APP"; [ -x "$LSREG" ] && "$LSREG" -f "$APP"; ICON_CHANGED=1
   fi
 done

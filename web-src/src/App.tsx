@@ -261,8 +261,9 @@ export default function App() {
       listMics()
     } catch (e) {
       const name = (e as DOMException)?.name
+      ;(window as unknown as { jarvisReport?: (m: string) => void }).jarvisReport?.(`mic: ${name} ${(e as Error)?.message || e}`)
       setMicErr(name === "NotAllowedError"
-        ? "Jarvis isn't allowed to use the microphone. In System Settings → Privacy & Security → Microphone, turn on Google Chrome, then reopen Jarvis."
+        ? "Jarvis isn't allowed to use the microphone. In System Settings → Privacy & Security → Microphone, turn on Jarvis, then reopen it."
         : name === "NotFoundError" || name === "OverconstrainedError"
           ? "That microphone isn't connected any more. Pick another one."
           : `Couldn't open the microphone: ${name || e}`)

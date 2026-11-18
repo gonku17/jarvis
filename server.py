@@ -930,6 +930,13 @@ async def api_status() -> dict:
             "brain": st.get("brain", load_settings().get("brain", "gemma"))}
 
 
+@app.post("/api/clientlog")
+async def api_clientlog(msg: dict) -> dict:
+    """Errors from the orb window, so problems show up in jarvis.log."""
+    log.warning("window: %s", str(msg.get("message", ""))[:500])
+    return {"ok": True}
+
+
 @app.get("/api/hud")
 async def api_hud() -> dict:
     return await skills.hud()
