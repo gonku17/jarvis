@@ -290,6 +290,7 @@ export default function App() {
       micSource.current = ctx.createMediaStreamSource(stream)
       micSource.current.connect(node)
       setMicErr("")
+      ;(window as unknown as { jarvisReport?: (m: string) => void }).jarvisReport?.(`mic ok: ${stream.getAudioTracks()[0]?.label || "default"}`)
       listMics()
     } catch (e) {
       const name = (e as DOMException)?.name
