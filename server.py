@@ -28,6 +28,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+import commands
+
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
 
@@ -45,16 +47,64 @@ HARD_RE = re.compile(r"\b(why|explain|how (?:does|do|would|can|could)|compare|di
                      r"write|draft|plan|calculate|translate|code|step[s ]?by[ -]step|in detail|pros and cons)\b", re.I)
 
 
+INSTALLED: list[dict] = []   # Ollama models, refreshed at start-up and when switching by voice
+CAN_SEE: dict[str, bool] = {}  # model name -> has vision, from Ollama's /api/show
+
+
+def local_model() -> str:
+    """The local model chosen by voice or in settings; JARVIS_LLM (Gemma) unless changed."""
+    return load_settings().get("local_model") or LLM_MODEL
+
+
+def is_offline() -> bool:
+    """Strict offline mode: no Claude, no weather, news, web search or downloads."""
+    return bool(load_settings().get("offline"))
+
+
 def pick_model(messages: list[dict]) -> str:
-    """Quick small model for short everyday questions, Gemma for anything harder or with extra facts."""
-    if not FAST_AVAILABLE or load_settings().get("fast_answers", True) is False:
-        return LLM_MODEL
+    """Quick small model for short everyday questions, the chosen local model for anything harder."""
+    main = local_model()
     if messages and messages[-1].get("images"):
-        return LLM_MODEL  # the small model can't see
+        return main if CAN_SEE.get(main, main == LLM_MODEL) else LLM_MODEL  # the photo needs a model that can see
+    if not FAST_AVAILABLE or load_settings().get("fast_answers", True) is False:
+        return main
     last = (messages[-1]["content"] if messages else "").strip()
     if len(last) > 120 or "\n" in last or HARD_RE.search(last) or not SMALLTALK_RE.match(last):
-        return LLM_MODEL
+        return main
     return FAST_MODEL
+
+
+async def installed_models() -> list[dict]:
+    """Chat models installed in Ollama, as [{"name", "size"}]."""
+    global INSTALLED
+    async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=2)) as c:
+        tags = (await c.get(f"{OLLAMA_URL}/api/tags")).json()
+    INSTALLED = [{"name": m["name"], "size": m.get("size", 0)} for m in tags.get("models", [])
+                 if "embed" not in m["name"]]
+    return INSTALLED
+
+
+async def check_vision(name: str) -> None:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=2)) as c:
+            info = (await c.post(f"{OLLAMA_URL}/api/show", json={"model": name})).json()
+        CAN_SEE[name] = "vision" in (info.get("capabilities") or [])
+    except Exception:
+        pass
+
+
+async def warm_model(name: str, unload: str | None = None) -> None:
+    """Load a model into memory now (so the first answer is quick), and free the previous one."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300, connect=3)) as c:
+            if unload and unload not in (name, FAST_MODEL):
+                await c.post(f"{OLLAMA_URL}/api/generate", json={"model": unload, "keep_alive": 0})
+            await c.post(f"{OLLAMA_URL}/api/generate", json={
+                "model": name, "prompt": "hi", "think": False, "stream": False,
+                "keep_alive": "2h", "options": {"num_predict": 1, "num_ctx": LLM_CTX}})
+        log.info("Warmed up %s", name)
+    except Exception as e:
+        log.warning("couldn't warm up %s: %s", name, e)
 WHISPER_MODEL = os.environ.get("JARVIS_WHISPER", "base.en")
 PIPER_VOICE = os.environ.get("JARVIS_VOICE", "en_GB-alan-medium")
 WAKE_THRESHOLD = float(os.environ.get("JARVIS_WAKE_THRESHOLD", "0.5"))
@@ -248,6 +298,15 @@ def download_piper_voice(name: str) -> Path:
     return onnx
 
 
+def voice_downloaded(voice: str) -> bool:
+    """True if this voice can be used without the internet."""
+    if voice == "piper":
+        return True
+    if voice.startswith("piper:"):
+        return (MODELS / "piper" / f"{voice.split(':', 1)[1]}.onnx").exists()
+    return (MODELS / "kokoro" / "voices-v1.0.bin").exists()
+
+
 engines = Engines()
 SESSIONS: set = set()
 
@@ -266,6 +325,7 @@ from skills import Skills  # noqa: E402
 
 skills = Skills(ROOT, announce, allowed=lambda name: bool(load_settings().get(f"allow_{name}")))
 skills.settings = lambda: load_settings()
+skills.save_settings = lambda **kw: save_settings(**kw)
 
 
 # ---------------------------------------------------------------- helpers
@@ -478,7 +538,11 @@ class Session:
             type="brain",
             brain=self.brain,
             has_key=bool(get_api_key()),
-            local_model=LLM_MODEL,
+            local_model=local_model(),
+            local_label=commands.pretty_model(local_model()),
+            local_models=[{"name": m["name"], "label": commands.pretty_model(m["name"])} for m in INSTALLED],
+            offline=is_offline(),
+            second_brain=str(skills.brain_folder()),
             claude_model=CLAUDE_MODEL,
             voice=engines.voice,
             allow_calendar=bool(load_settings().get("allow_calendar")),
@@ -492,6 +556,11 @@ class Session:
         )
 
     async def switch_brain(self, brain: str, announce: bool) -> None:
+        if brain == "claude" and is_offline():
+            await self.send_brain()
+            if announce:
+                await self.speak_only("I'm in offline mode, so Claude is off limits. Say \"go online\" first.")
+            return
         if brain == "claude" and not get_api_key():
             await self.send_brain()
             await self.send(type="need_key")
@@ -507,8 +576,109 @@ class Session:
                 await s.send_brain()
         await self.send_brain()
         if announce:
-            name = "Claude" if brain == "claude" else "Gemma, running locally"
+            name = "Claude" if brain == "claude" else f"{commands.say_model(local_model())}, running locally"
             await self.speak_only(f"Switching my brain to {name}.")
+
+    async def broadcast_brain(self) -> None:
+        for s in list(SESSIONS) + [self]:
+            s.brain = load_settings().get("brain", "gemma")
+            await s.send_brain()
+
+    # -- spoken settings: local model, voice, offline mode
+    async def set_local_model(self, name: str, announce: bool) -> None:
+        old = local_model()
+        save_settings(local_model=None if name == LLM_MODEL else name)
+        if self.brain == "claude":
+            save_settings(brain="gemma")
+        SYSTEMS["brain"] = True
+        await self.broadcast_brain()
+        asyncio.create_task(check_vision(name))
+        warm = asyncio.create_task(warm_model(name, unload=old))
+        if announce:
+            if name == old:
+                await self.speak_only(f"I'm already using {commands.say_model(name)}.")
+            else:
+                await self.speak_only(f"Switching my local brain to {commands.say_model(name)}. "
+                                      "Give me a moment to load it.")
+        await warm
+
+    async def model_command(self, cmd: str) -> None:
+        try:
+            models = await installed_models()
+        except Exception:
+            await self.speak_only("I can't reach Ollama. Is the Ollama app running?")
+            return
+        if not models:
+            await self.speak_only("I can't see any models in Ollama yet.")
+            return
+        if cmd == "list":
+            names = [commands.say_model(m["name"]) for m in models]
+            listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            now = "Claude" if self.brain == "claude" else commands.say_model(local_model())
+            await self.speak_only(f"I have {len(names)} local model{'s' if len(names) != 1 else ''}: {listed}. "
+                                  f"Right now I'm using {now}.")
+            return
+        if cmd in ("smallest", "biggest", "default"):
+            pick = commands.pick_special(cmd, models, LLM_MODEL)
+        else:
+            found = commands.match_model(cmd, models)
+            pick = found[0] if found else None
+        if not pick:
+            what = "my default model" if cmd == "default" else cmd
+            await self.speak_only(f"I don't have {what} installed. You can add it in Terminal with ollama pull, "
+                                  "then ask me again.")
+            return
+        await self.set_local_model(pick["name"], announce=True)
+
+    async def apply_voice(self, voice: str, line: str | None = None) -> None:
+        if is_offline() and not voice_downloaded(voice):
+            await self.send_brain()
+            await self.speak_only("That voice isn't downloaded yet, and I'm in offline mode. Go online first.")
+            return
+        await self.send(type="voice_loading")
+        try:
+            await self.loop.run_in_executor(None, engines.set_voice, voice)
+            save_settings(voice=voice)
+        except Exception as e:
+            log.warning("voice %s failed: %s", voice, e)
+            await self.send(type="error", message=f"Couldn't load that voice: {e}")
+            await self.send_brain()
+            await self.speak_only("Sorry, I couldn't download that voice. Check the internet connection and try again.")
+            return
+        await self.broadcast_brain()
+        name = VOICES[voice].split(" ·")[0].replace("Northern", "your northern voice")
+        await self.speak_only(line or f"Hello, I'm {name}. This is how I'll sound from now on.")
+
+    async def voice_command(self, cmd: str) -> None:
+        if cmd == "list":
+            names = sorted({VOICES[v].split(" ·")[0] for v in VOICES if v != "piper:en_GB-northern_english_male-medium"})
+            now = VOICES.get(engines.voice, "Alan").split(" ·")[0]
+            await self.speak_only(f"I can sound like {', '.join(names[:-1])} or {names[-1]}. "
+                                  f"I'm {now} right now. They all run on this Mac.")
+        elif cmd == "local":
+            await self.speak_only("All my voices already run right here on this Mac. Say a name, like George or Emma, "
+                                  "to change how I sound.")
+        elif cmd == engines.voice:
+            await self.speak_only("This is already the voice I'm using.")
+        else:
+            await self.apply_voice(cmd)
+
+    async def offline_command(self, cmd: str) -> None:
+        if cmd == "status":
+            await self.speak_only("I'm in offline mode. Everything stays on this Mac." if is_offline() else
+                                  "I'm online. Say \"go offline\" to keep everything on this Mac.")
+            return
+        on = cmd == "on"
+        save_settings(offline=on)
+        if on and self.brain == "claude":
+            save_settings(brain="gemma")
+        skills.__dict__.get("_hud_cache", {}).clear()
+        await self.broadcast_brain()
+        if on:
+            await self.speak_only("Offline mode is on. Everything stays on this Mac: no Claude, weather, news or "
+                                  "web search until you say go online.")
+        else:
+            await self.speak_only("I'm back online. Weather, news and web search are available again.")
 
     async def wait_until_spoken(self, limit: float = 8.0) -> None:
         """Wait for the window to finish playing what was just said (it sends playback_done)."""
@@ -634,8 +804,23 @@ class Session:
         self.interrupted = False
         await self.send(type="user", text=text)
         await self.set_state("thinking")
+        short = len(text.split()) <= 12
+        offline = commands.parse_offline(text) if short else None
+        if offline:
+            await self.offline_command(offline)
+            return
+        voice = commands.parse_voice_switch(text, VOICES, VOICE_GENDER, engines.voice) if short else None
+        if voice:
+            await self.voice_command(voice)
+            return
+        model = commands.parse_model_switch(text) if short else None
+        if model:
+            await self.model_command(model)
+            return
         target = parse_switch(text) if len(text.split()) <= 10 else None
         if target:
+            if target == "gemma" and re.search(r"\bgemma\b", text, re.I) and not local_model().startswith("gemma"):
+                await self.set_local_model(LLM_MODEL, announce=False)  # "switch to Gemma" after picking another model
             await self.switch_brain(target, announce=True)
             return
 
@@ -729,7 +914,7 @@ class Session:
 
     async def brain_stream(self, messages: list[dict]):
         """Yield reply text from the chosen brain; fall back to Gemma if Claude isn't available."""
-        if self.brain == "claude":
+        if self.brain == "claude" and not is_offline():
             import anthropic
 
             started = False
@@ -822,19 +1007,21 @@ class Session:
         elif kind == "set_voice":
             voice = str(msg.get("voice"))
             if voice in VOICES:
-                await self.send(type="voice_loading")
-                try:
-                    await self.loop.run_in_executor(None, engines.set_voice, voice)
-                    save_settings(voice=voice)
-                except Exception as e:
-                    log.warning("voice %s failed: %s", voice, e)
-                    await self.send(type="error", message=f"Couldn't load that voice: {e}")
-                    await self.send_brain()
-                    await self.speak_only("Sorry, I couldn't download that voice. Check the internet connection and try again.")
-                    return
+                await self.apply_voice(voice)
+        elif kind == "set_local_model":
+            name = str(msg.get("model"))
+            if any(m["name"] == name for m in INSTALLED):
+                await self.set_local_model(name, announce=True)
+        elif kind == "set_offline":
+            await self.offline_command("on" if msg.get("on") else "off")
+        elif kind == "set_second_brain":
+            folder = str(msg.get("folder") or "").strip()
+            path = Path(folder).expanduser() if folder else None
+            if path is None or path.is_dir():
+                save_settings(second_brain=str(path) if path else None)
                 await self.send_brain()
-                name = VOICES[voice].split(" ·")[0].replace("Northern", "your northern voice")
-                await self.speak_only(f"Hello, I'm {name}. This is how I'll sound from now on.")
+            else:
+                await self.send(type="error", message=f"There's no folder at {folder}.")
         elif kind == "set_brain":
             await self.switch_brain(str(msg.get("brain")), announce=False)
         elif kind == "set_key":
@@ -927,16 +1114,26 @@ async def load_everything() -> None:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=3)) as c:
             tags = (await c.get(f"{OLLAMA_URL}/api/tags")).json()
             names = [m["name"] for m in tags.get("models", [])]
+            global INSTALLED
+            INSTALLED = [{"name": m["name"], "size": m.get("size", 0)} for m in tags.get("models", [])
+                         if "embed" not in m["name"]]
+            chosen = local_model()
+            if chosen != LLM_MODEL and chosen not in names:
+                log.warning("Chosen model %s is no longer installed; back to %s", chosen, LLM_MODEL)
+                save_settings(local_model=None)
+                chosen = LLM_MODEL
             global FAST_AVAILABLE
             FAST_AVAILABLE = any(n == FAST_MODEL or n == FAST_MODEL + ":latest" for n in names)
             if not FAST_AVAILABLE:
                 log.info("Quick-answer model %s not installed (ollama pull %s); using %s for everything.",
                          FAST_MODEL, FAST_MODEL, LLM_MODEL)
-            if LLM_MODEL not in names:
-                log.warning("Model %s not found in Ollama. Run: ollama pull %s", LLM_MODEL, LLM_MODEL)
+            if chosen not in names:
+                log.warning("Model %s not found in Ollama. Run: ollama pull %s", chosen, chosen)
             global BRAIN_OK
-            BRAIN_OK = LLM_MODEL in names
-            for m in ([FAST_MODEL] if FAST_AVAILABLE else []) + ([LLM_MODEL] if LLM_MODEL in names else []):
+            BRAIN_OK = chosen in names
+            if chosen != LLM_MODEL:
+                asyncio.create_task(check_vision(chosen))
+            for m in ([FAST_MODEL] if FAST_AVAILABLE else []) + ([chosen] if chosen in names else []):
                 log.info("Warming up %s…", m)
                 await c.post(
                     f"{OLLAMA_URL}/api/generate",
@@ -966,7 +1163,8 @@ def systems_check() -> list[dict]:
         {"name": "Speech recognition", "ok": engines.stt is not None, "detail": f"Whisper {WHISPER_MODEL}"},
         {"name": "Voice", "ok": True, "detail": voice},
         {"name": "Brain", "ok": SYSTEMS.get("brain", False) or st.get("brain") == "claude",
-         "detail": "Claude" if st.get("brain") == "claude" else LLM_MODEL},
+         "detail": "Claude" if st.get("brain") == "claude" else commands.pretty_model(local_model())},
+        {"name": "Network", "ok": True, "detail": "offline mode" if st.get("offline") else "online"},
         {"name": "Calendar", "ok": bool(st.get("allow_calendar")), "detail": "linked" if st.get("allow_calendar") else "off"},
         {"name": "Mail", "ok": bool(st.get("allow_mail")), "detail": "linked" if st.get("allow_mail") else "off"},
         {"name": "Smart home", "ok": st.get("smart_home", "alexa") != "off", "detail": "via Alexa" if st.get("smart_home", "alexa") != "off" else "off"},
@@ -1110,6 +1308,8 @@ async def mediapipe_file(name: str):
     if name not in MP_FILES:
         raise HTTPException(404)
     path = MODELS / "mediapipe" / f"{MP_VERSION}-{name}" if name != "gesture_recognizer.task" else MODELS / "mediapipe" / name
+    if not path.exists() and is_offline():
+        raise HTTPException(503, "Hand gestures need a one-time download; go online first.")
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         log.info("Downloading %s for hand gestures", name)

@@ -29,6 +29,11 @@ export default function App() {
   const [brain, setBrain] = useState<"gemma" | "claude">("gemma")
   const [hasKey, setHasKey] = useState(false)
   const [models, setModels] = useState({ local: "", claude: "" })
+  const [localLabel, setLocalLabel] = useState("Gemma")
+  const [localModels, setLocalModels] = useState<{ name: string; label: string }[]>([])
+  const [offline, setOffline] = useState(false)
+  const [secondBrain, setSecondBrain] = useState("")
+  const [brainDraft, setBrainDraft] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [keyDraft, setKeyDraft] = useState("")
   const [keyNote, setKeyNote] = useState("")
@@ -142,6 +147,10 @@ export default function App() {
           setBrain(m.brain)
           setHasKey(m.has_key)
           setModels({ local: m.local_model, claude: m.claude_model })
+          if (m.local_label) setLocalLabel(m.local_label.replace(/ E\d+B$/, ""))
+          if (m.local_models) setLocalModels(m.local_models)
+          setOffline(!!m.offline)
+          if (m.second_brain !== undefined) setSecondBrain(m.second_brain)
           if (m.voice) setVoice(m.voice)
           if (m.voices) setVoices(m.voices)
           if (m.voice_gender) setVoiceGender(m.voice_gender)
@@ -359,13 +368,15 @@ export default function App() {
         <span>
           <span className={`dot ${connected ? "on" : ""}`} />
           Jarvis {connected ? "online" : "offline"}
+          {connected && offline && <span className="offline-badge" title="Offline mode: nothing leaves this Mac">offline mode</span>}
         </span>
         <span className="brains">
           <span className="seg">
             <button className={brain === "gemma" ? "on" : ""} onClick={() => chooseBrain("gemma")} title={models.local}>
-              Gemma
+              {localLabel || "Gemma"}
             </button>
-            <button className={brain === "claude" ? "on claude" : ""} onClick={() => chooseBrain("claude")} title={models.claude}>
+            <button className={brain === "claude" ? "on claude" : ""} onClick={() => chooseBrain("claude")}
+              title={offline ? "Off while offline mode is on" : models.claude} disabled={offline}>
               Claude
             </button>
           </span>
@@ -402,6 +413,31 @@ export default function App() {
             )}
           </div>
           <p className="muted">Tip: you can also say “switch to Claude” or “switch to Gemma”.</p>
+          <div className="settings-title">Local brain</div>
+          <select className="mic-select" value={models.local}
+            onChange={(e) => send({ type: "set_local_model", model: e.target.value })}>
+            {localModels.length === 0 && <option value={models.local}>{localLabel}</option>}
+            {localModels.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+          </select>
+          <p className="muted">Any model installed in Ollama. Say “switch to Qwen” or “what models do you have?”.
+            Add more in Terminal with <code>ollama pull</code>.</p>
+          <label className="toggle">
+            <input type="checkbox" checked={offline}
+              onChange={(e) => send({ type: "set_offline", on: e.target.checked })} />
+            Offline mode: nothing leaves this Mac (no Claude, weather, news or web search). Say “go offline” / “go online”.
+          </label>
+          <div className="settings-title">Second brain</div>
+          <form className="bar" onSubmit={(e) => {
+            e.preventDefault()
+            if (brainDraft !== null) send({ type: "set_second_brain", folder: brainDraft })
+            setBrainDraft(null)
+          }}>
+            <input value={brainDraft ?? secondBrain} onChange={(e) => setBrainDraft(e.target.value)}
+              placeholder="~/Documents" spellCheck={false} />
+            <button type="submit">Save</button>
+          </form>
+          <p className="muted">The folder Jarvis searches when you ask “what do my notes say about…?” or “pull up…”.
+            Searched on this Mac; if Claude is the brain, the matching excerpts go to Claude with your question.</p>
           <label className="toggle">
             <input type="checkbox" checked={fast.on && fast.available} disabled={!fast.available}
               onChange={(e) => send({ type: "set_fast_answers", on: e.target.checked })} />

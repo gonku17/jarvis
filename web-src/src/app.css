@@ -131,3 +131,5 @@ body {
 .cam-dot { width: 7px; height: 7px; border-radius: 50%; background: #666; }
 .cam-dot.on { background: #30a46c; box-shadow: 0 0 6px #30a46c; }
 .gesture-flash { position: absolute; left: 100%; margin-left: 10px; font-size: 34px; animation: snapIn 0.3s ease-out; }
+.offline-badge { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px; background: rgba(48, 164, 108, 0.18); color: #3dd68c; vertical-align: middle; }
+.brains .seg button:disabled { opacity: 0.4; cursor: not-allowed; }
