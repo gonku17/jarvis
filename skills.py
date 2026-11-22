@@ -21,7 +21,10 @@ from typing import Awaitable, Callable
 
 import httpx
 
+import secondbrain
+
 log = logging.getLogger("jarvis.skills")
+OFFLINE_NOTE = "I'm in offline mode, so I can't {what}. Say \"go online\" if you want me to."
 
 
 @dataclass
@@ -516,6 +519,8 @@ class Skills:
         run = lambda f, *a: loop.run_in_executor(None, f, *a)  # noqa: E731
 
         async def get_weather():
+            if self.offline():
+                return None
             return await weather_brief(self.memory.fact_value(r"lives in (.+)"))
 
         async def get_event():
@@ -538,6 +543,8 @@ class Skills:
             return {"unread": unread, "latest": [{"from": m["from"], "subject": m["subject"]} for m in msgs[:3]]}
 
         async def get_news():
+            if self.offline():
+                return None
             async with httpx.AsyncClient(timeout=8, headers=UA) as c:
                 r = await c.get("https://feeds.bbci.co.uk/news/rss.xml")
             titles = re.findall(r"<item>.*?<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", r.text, re.S)
@@ -579,12 +586,22 @@ class Skills:
             notes.append("Things you remember about the user: " + "; ".join(self.memory.facts) + ".")
         return " ".join(notes)
 
+    def offline(self) -> bool:
+        """Strict offline mode: nothing that needs the internet."""
+        return bool(self.settings().get("offline"))
+
+    def brain_folder(self) -> Path:
+        import os
+        chosen = self.settings().get("second_brain") or os.environ.get("JARVIS_SECOND_BRAIN")
+        return Path(chosen).expanduser() if chosen else Path.home() / "Documents"
+
     def preferred_name(self) -> str | None:
         return self.memory.fact_value(r"(?:wants to be called|name is) (.+)")
 
     async def handle(self, text: str) -> Result | None:
         t = text.lower().strip().rstrip(".!?")
-        for fn in (self.memory_skill, self.vision_skill, self.scene_skill, self.home_skill, self.briefing_skill, self.screen_skill, self.file_skill,
+        for fn in (self.memory_skill, self.vision_skill, self.scene_skill, self.home_skill, self.briefing_skill, self.screen_skill,
+                   self.second_brain_skill, self.file_skill,
                    self.timer_skill, self.reminder_skill, self.app_skill,
                    self.volume_skill, self.music_skill, self.play_skill, self.shortcut_skill, self.time_skill,
                    self.calendar_skill, self.mail_skill,
@@ -913,7 +930,8 @@ end tell"""
             parts = [f"Good night{', ' + name if name else ''}."]
             place = self.memory.fact_value(r"lives in (.+)")
             try:
-                parts.append(await asyncio.wait_for(weather(place, tomorrow=True), 8))
+                if not self.offline():
+                    parts.append(await asyncio.wait_for(weather(place, tomorrow=True), 8))
             except Exception:
                 pass
             if self.allowed("calendar"):
@@ -963,8 +981,11 @@ end tell"""
         parts = [f"{hello}{', ' + name if name else ''}. It's {now.strftime('%A the')} {now.day}{'th' if 11 <= now.day <= 13 else {1:'st',2:'nd',3:'rd'}.get(now.day % 10, 'th')}, {now.strftime('%-I:%M %p')}."]
         place = self.memory.fact_value(r"lives in (.+)")
         loop = asyncio.get_running_loop()
-        jobs = [weather(place, tomorrow=False), headlines(3)]
-        res = await asyncio.gather(*jobs, return_exceptions=True)
+        if self.offline():
+            res = [None, None]
+        else:
+            jobs = [weather(place, tomorrow=False), headlines(3)]
+            res = await asyncio.gather(*jobs, return_exceptions=True)
         if isinstance(res[0], str):
             parts.append(res[0])
         if self.allowed("calendar"):
@@ -984,6 +1005,85 @@ end tell"""
         if isinstance(res[1], str):
             parts.append(res[1].replace("Here are the top headlines from the BBC.", "In the news:"))
         return Result(reply=" ".join(parts))
+
+    # -- second brain: answer from the user's own notes and documents
+    BRAIN_SET_RE = re.compile(
+        r"^(?:use|set|make|point) (?:my |the )?(.+?) (?:folder )?(?:as|for|to be) (?:your|my|the) second brain$|"
+        r"^(?:set|change|point|move) (?:your|my|the) second brain(?: folder)? to (?:my |the )?(.+)$")
+    BRAIN_WHERE_RE = re.compile(r"\b(?:where is|where's|what(?:'s| is)|which folder is) (?:your|my|the) second brain\b")
+    BRAIN_SEARCH_RES = [
+        re.compile(r"^(?:search|check|look (?:in|through|at)|go through|scan|dig through) (?:my |the |your )?"
+                   r"(?:notes|second brain|local files|files|documents|docs)(?: for| about| on)? (.+)$"),
+        re.compile(r"^what (?:do|does|did) (?:my|the|your) (?:notes|files|documents|docs|second brain) say (?:about|on|regarding) (.+)$"),
+        re.compile(r"^(?:what do i have|do i have anything|is there anything|have i got anything|have i written anything) "
+                   r"(?:on|about) (.+?) in (?:my|the|your) (?:notes|files|documents|docs|second brain)$"),
+        re.compile(r"^(?:anything|what's|what is) in (?:my|the|your) (?:notes|files|documents|docs|second brain) (?:on|about) (.+)$"),
+        re.compile(r"^(?:find|search for) (.+?) in (?:my|the|your) (?:notes|files|documents|docs|second brain)$"),
+    ]
+    BRAIN_PULL_RE = re.compile(r"^(?:pull up|bring up|get me|dig up) (?:my |the |all (?:of )?(?:my |the )?)?"
+                               r"(?:info |information |notes |stuff |files )?(?:on |about |for )?(.+)$")
+
+    async def second_brain_skill(self, t: str, raw: str) -> Result | None:
+        loop = asyncio.get_running_loop()
+        last = self.__dict__.get("_brain_last")
+        recent = last and time.time() - last[1] < 300
+
+        m = self.BRAIN_SET_RE.match(t)
+        if m:
+            spoken = (m.group(1) or m.group(2) or "").strip()
+            folder = await loop.run_in_executor(None, secondbrain.resolve_folder, spoken)
+            if not folder:
+                return Result(reply=f"I couldn't find a folder called {spoken} in your home, Documents or Desktop.")
+            self.save_setting("second_brain", str(folder))
+            return Result(reply=f"Done. Your {folder.name} folder is now my second brain.")
+        if self.BRAIN_WHERE_RE.search(t):
+            f = self.brain_folder()
+            return Result(reply=f"My second brain is your {f.name} folder." if f.is_dir() else
+                          f"My second brain is set to {f}, but I can't find that folder.")
+        if recent and re.fullmatch(r"(?:read|read me|read out) (?:it|that|that file|the file|this)(?: out| to me| aloud| out loud)?", t):
+            path = last[0]
+            if path.is_dir():
+                return Result(reply=f"{path.name} is a folder. Ask me about something in it.")
+            text = await loop.run_in_executor(None, secondbrain.readable_start, path)
+            return Result(reply=f"From {path.stem}: {text}" if text else f"I can't read the text of {path.name}.")
+        if recent and re.fullmatch(r"(?:open|show me|show) (?:it|that|that file|that folder|the file|the folder)(?: please)?", t):
+            subprocess.Popen(["open", str(last[0])])
+            return Result(reply=f"Opening {last[0].name}.")
+
+        query, pulled = None, False
+        for rx in self.BRAIN_SEARCH_RES:
+            m = rx.match(t)
+            if m:
+                query = m.group(1)
+                break
+        if not query:
+            m = self.BRAIN_PULL_RE.match(t)
+            if not m:
+                return None
+            query, pulled = m.group(1), True
+        root = self.brain_folder()
+        if not root.is_dir():
+            return None if pulled else Result(reply=f"I can't find my second brain folder ({root}). Tell me which folder to use.")
+        try:
+            hits = await asyncio.wait_for(loop.run_in_executor(None, secondbrain.search, root, query), 15)
+        except (asyncio.TimeoutError, PermissionError):
+            hits = []
+        if not hits:
+            if pulled:
+                return None  # "pull up Safari" etc.: let the other skills try
+            return Result(reply=f"I couldn't find anything about {query} in your {root.name} folder.")
+        self.__dict__["_brain_last"] = (hits[0].path, time.time())
+        return Result(context=(
+            f"These are excerpts from the user's own files in their second brain folder ({root.name}), found just now "
+            f"on their Mac:\n\n{secondbrain.describe(root, hits)}\n\n"
+            "Answer from these excerpts only. Say which file or folder it came from by its name (without the "
+            "extension). Keep it short and spoken; offer to read it out or open it. If they don't answer it, say so."))
+
+    def save_setting(self, key: str, value) -> None:
+        """Write one key to settings.json (the server's settings file)."""
+        saver = self.__dict__.get("save_settings")
+        if saver:
+            saver(**{key: value})
 
     # -- find files with Spotlight
     async def file_skill(self, t: str, raw: str) -> Result | None:
@@ -1098,12 +1198,16 @@ end tell"""
         m = re.search(r"\b(?:in|for|at) ([a-z][a-z .'-]+?)(?: today| tomorrow| now| this week)?$", t)
         place = m.group(1).strip() if m and m.group(1) not in ("the morning", "the evening") else None
         place = place or self.memory.fact_value(r"lives in (.+)")
+        if self.offline():
+            return Result(reply=OFFLINE_NOTE.format(what="check the weather"))
         return Result(reply=await weather(place, tomorrow="tomorrow" in t))
 
     # -- news
     async def news_skill(self, t: str, raw: str) -> Result | None:
         if not re.search(r"\b(news|headlines)\b", t):
             return None
+        if self.offline():
+            return Result(reply=OFFLINE_NOTE.format(what="get the news"))
         m = re.search(r"\b(?:news|headlines) (?:about|on|regarding) (.+)", t)
         if m:
             results = await web_search(m.group(1) + " news")
@@ -1120,6 +1224,9 @@ end tell"""
             query = raw
         if not query:
             return None
+        if self.offline():
+            # asked outright: say why; otherwise let the local brain answer from what it knows
+            return Result(reply=OFFLINE_NOTE.format(what="search the web")) if m else None
         results = await web_search(query)
         if not results:
             return None

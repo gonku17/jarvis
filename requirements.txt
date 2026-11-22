@@ -12,3 +12,4 @@ sounddevice>=0.4
 rumps>=0.4; sys_platform == "darwin"
 pyobjc-framework-Vision>=10; sys_platform == "darwin"
 pyobjc-framework-WebKit>=10; sys_platform == "darwin"
+pypdf>=4.0
